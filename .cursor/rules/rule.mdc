@@ -1,0 +1,11 @@
+---
+description: 
+alwaysApply: true
+---
+
+# UI Design Standard
+- Color: Primary #2563eb (Blue), Background #f8fafc (Slate-50).
+- Component Style: Rounded corners (xl), subtle borders (slate-200), card-based containers.
+- Typography: Use Inter or sans-serif. Labels should be small and muted.
+- Layout: Max width 1200px, consistent padding (p-6), use Grid for forms (2-3 columns).
+- Interactive: Buttons should have subtle scale-down effect on click.

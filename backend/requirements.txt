@@ -1,0 +1,8 @@
+fastapi>=0.109.0
+uvicorn>=0.27.0
+sqlalchemy>=2.0.25
+apscheduler>=3.10.4
+pydantic-settings>=2.1.0
+python-multipart>=0.0.9
+httpx>=0.26.0
+# 数据拉取需自行安装（建议 Python 3.10+）：pip install tushare

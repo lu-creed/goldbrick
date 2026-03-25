@@ -1,0 +1,3 @@
+# 在已安装 backend/requirements.txt 后执行：
+# pip install -r requirements-sync.txt
+tushare>=1.2.0
