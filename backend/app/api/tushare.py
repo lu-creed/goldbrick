@@ -1,3 +1,8 @@
+"""Tushare 相关只读接口（/api/tushare）。
+
+例如拉全 A 股列表，给同步页勾选；真正请求外部 API 在 app/services/ingestion.py。
+"""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException

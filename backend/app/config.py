@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "backtest-web-api"
+    app_name: str = "goldbrick-api"
     database_url: str = "sqlite:///./data/app.db"
 
     # 数据源（勿提交到仓库）

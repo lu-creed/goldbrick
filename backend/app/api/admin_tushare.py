@@ -1,8 +1,19 @@
+"""后台管理接口（/api/admin）：当前主要是 Tushare 的 token。
+
+同步任务页用来查看是否已配置、保存 token；具体实现在 app/services/runtime_tokens.py。
+"""
+
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from typing import List, Optional
 
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.models import Symbol
+from app.services.indicator_precompute import rebuild_indicator_pre_for_symbol
 from app.services.runtime_tokens import get_tushare_token_status, set_runtime_tushare_token
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -30,4 +41,24 @@ def set_tushare_token(body: SetTokenReq):
 
     # 按产品要求：保存阶段不调用外部接口校验；在真正同步任务开始前再校验。
     return {"ok": True, "validated": False}
+
+
+class RebuildIndicatorPreReq(BaseModel):
+    """留空则重建全部股票池标的的日线指标预计算（仅 adj=none）。"""
+    ts_codes: Optional[List[str]] = None
+
+
+@router.post("/indicator-pre/rebuild")
+def rebuild_indicator_pre(body: RebuildIndicatorPreReq, db: Session = Depends(get_db)):
+    codes = [c.strip().upper() for c in (body.ts_codes or []) if c and str(c).strip()]
+    if codes:
+        syms = db.query(Symbol).filter(Symbol.ts_code.in_(codes)).all()
+    else:
+        syms = db.query(Symbol).order_by(Symbol.ts_code.asc()).all()
+    total_rows = 0
+    done = 0
+    for sym in syms:
+        total_rows += rebuild_indicator_pre_for_symbol(db, sym.id, "none")
+        done += 1
+    return {"symbols": done, "rows_written": total_rows}
 

@@ -1,3 +1,9 @@
+"""指标库接口（/api/indicators）。
+
+列表、详情、种子数据写入。指标定义来自 app/services/indicator_seed.py。
+对应前端：指标库页。
+"""
+
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException

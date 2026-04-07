@@ -81,6 +81,68 @@
 - 后端新增 POST /api/backtest/condition-buy 接口。
 - 后端新增 services/indicator_compute.py，计算 MA/EXPMA/BOLL/MACD/KDJ/个股数据六类指标（参数全部锁定为默认值）。
 
+## V1.0.7
+
+- 数据后台标的列表增加「日线明细」：弹窗内按日期区间筛选、分页展示每日 OHLC、量、换手率。
+- 日线表展示当日是否有复权因子（有/无），便于定位缺失日。
+- 每行支持「单日同步」：调用 `POST /api/sync/single-day`，任务进入同步运行记录与日志。
+- 后端新增 `GET /api/sync/symbol/{ts_code}/daily` 分页查询日线。
+
+## V1.0.8
+
+- 回测卖出条件完全替代 V1.0.3 目标价/收益率/日期三件套。
+- 卖出时机最多 3 组，OR/AND 组合：止盈（相对加权平均成本）、止损（相对加权成本）、价格/指标条件（与买入结构一致）、定时（自最近一笔买入起满 N 个交易日）。
+- 卖出价格支持定价或指标价；触发后一次性清仓。
+- 同一交易日若同时满足买卖：先执行卖出再评估买入。
+- 买入侧支持最多 3 组买入时机 OR/AND，可选「个股最大仓位」比例（买入后 股票市值/总资产 上限）。
+
+## V1.0.9
+
+- 新增全市场/自选多标的条件回测接口 `POST /api/backtest/universe-condition-buy`（同日排序、前 N 只或买到现金不足一手为止；复权 none/qfq/hfq 与单股一致）。
+- 日线指标预计算表 `indicator_pre_daily`：`adj_mode=none`；同步任务在每标的成功拉数后自动重算落库；全市场且不复权时优先读表，缺失则内存现算。
+- 全市场模式下标的数量上限 800，回测区间最长自然日 3 年（与 `ensure_backtest_within_three_calendar_years` 一致）。
+- 回测页标的统一为「全市场 / 自选多选」：自选仅选 1 只时走单券回测与完整复权；多只或全市场走多标的异步回测、前复权与三年区间校验；买入时机/价格/数量合并为「买入规则」卡片，单组买入时机隐藏 OR/AND；启用卖出且仅 1 组卖出时机时同样隐藏 OR/AND。
+- 全市场/自选长任务：`POST /api/backtest/universe-condition-buy/start` 返回 `job_id`；`GET .../universe-condition-buy/jobs/{job_id}` 轮询阶段、百分比与推演 ETA；完成后 `GET .../jobs/{job_id}/result` 取完整结果。任务仅存服务端进程内存，**进程重启后丢失**。
+
+## V2.0.1
+
+- 新增「数据复盘」页签（`/replay`）：单日复盘；期间复盘入口占位禁用。
+- 新增 `GET /api/replay/daily`：可选 `trade_date`；缺省时用本地 `bars_daily` 最新交易日；返回涨跌/平盘家数、涨跌停家数、涨跌幅分布桶、上涨/下跌样本平均换手率、三大股指卡片（上证/深证/创业板指，无数据时提示同步指数）、波动居前股票列表（`list_limit` 可调）。
+- 复盘统计范围：`instrument_meta` 中 `asset_type=stock`、当日有日线且能解析到昨收的标的；新股上市首日计入分布桶、不计入涨跌停家数。
+- 新增 `services/limit_rules.py`：ST→5%、新股首日跳过涨跌停计数、否则主板类 10% / 创业板·科创板 20% / 北交所 30%；触及判断带 0.98 容差（与历史回测近似思路一致）。
+- 后端 API 版本号展示为 `2.0.1`（OpenAPI `FastAPI(..., version=...)`）。
+
+
+## 0.0.2-dev
+
+- 同步任务：`POST /api/sync/fetch-all-index` + 前端「全市场指数拉取」；按 `instrument_meta` 已登记指数批量 `index_daily`，与全市场个股拉取共用日期规则。
+- 同步运行记录支持暂停/继续/取消：`sync_runs` 增加 `pause_requested`、`cancel_requested`；`POST .../pause|resume|cancel`；工作线程在标的之间协作轮询；状态 `cancelled`；运行列表轮询包含 `paused`。
+- 修复：日志路径在原实现中先于文件 `open` 写入库，短时间内打开日志 404；改为创建文件后再 `commit` `log_path`，并 `flush` 日志；`get_run_log` 用 `relative_to` 校验路径并支持相对路径；Session `expire_on_commit=True` 避免进度更新覆盖取消标志；取消在 `verify_tushare` 前亦可生效。
+- 同步取消增强：`POST /sync/runs/{id}/cancel?force=true` 在库内直接记为 `cancelled`（解决僵尸 `running`）；工作线程轮询若见记录已终态则退出；收尾与异常路径不覆盖已强制取消。
+- 同步任务页：运行中轮询不再触发「定时配置」卡片 loading，避免同步时页签区域闪烁抖动。
+- 同步任务页新增「全市场拉取」：`POST /api/sync/fetch-all`，按 `instrument_meta` 全部个股（与数据池一致）入队。
+- 移除 `symbols.enabled` 及个股参与同步概念：定时全量与元数据个股对齐；SQLite 启动时尝试 `DROP COLUMN`；`GET/PATCH /api/symbols` 不再含该字段。
+- 顶栏菜单按功能模块分四项（数据后台、数据看板、条件选股、股票回测），每项下挂 PRD 二级入口；不再套一层 V0.0.1 / V0.0.2 版本分组。同步日志 `/sync#sync-runs`。
+- **个股列表**与**数据池**分离：`GET /api/dashboard/daily-stocks` + 前端 `/stock-list` 仅展示某日行情字段；数据后台仍用 `GET /api/sync/data-center` 管同步与完整性。K 线支持 `?ts_code=`。
+- 个股列表页：居中卡片布局、工具栏换行、表格横向滚动与粘顶表头；`lg` 以下视口隐藏开高低三列。
+- 个股列表：`GET /api/dashboard/daily-stocks` 支持代码/名称/市场/交易所子串与 OHLC、量额、换手、涨跌幅等区间筛选；前端折叠表单与「应用筛选 / 重置」。
+- 股票复盘（`/replay`）：页内标题与顶栏统一为「股票复盘」；三大指数卡片按涨跌/平盘区分红/绿/黑灰底，有数据时可点击跳转 `/?ts_code=` 打开 K 线；涨跌幅分布柱状图柱顶标注家数；移除「当日波动居前」表与「换手涨跌比」图。K 线页对 URL 中带有的 `ts_code` 即使未在 `symbols` 登记亦保留选项并请求日线（便于指数穿透）。
+- 页内大标题与顶栏对齐：`数据同步` 页、`数据池` 页（原为「同步任务」「数据后台」）。
+- 下线全部 legacy 回测：`/api/backtest/*`、异步全市场 job、相关 `schemas` 模型；删除前端「回测」页及 `BacktestPage` / 旧买入卖出页；顶栏菜单移除回测入口；`/buy`、`/sell` 重定向到首页。
+- OpenAPI / FastAPI `version` 调整为 `0.0.2-dev`；配置项 `app_name` 改为 `goldbrick-api`。
+- 保留同步侧 `indicator_pre_daily` 与 `POST /api/admin/indicator-pre/rebuild`，供后续自定义指标、条件选股与 V0.0.3 新回测复用。
+- README 与本文同步更新；历史 V1.x～V2.0.1 条目保留作存档，其中回测相关接口**已不再提供**。
+- 用户自定义指标 MVP：表 `user_indicators`；`services/custom_indicator_eval.py`（AST 白名单 + 四则求值）、`services/custom_indicator_service.py`（试算）；路由前缀 `/api/indicators/custom`；指标库页「自定义指标」Tab（新建/编辑/试算/删除）。
+- 修复：`GET /api/indicators/custom` 因路由注册顺序被 `GET /api/indicators/{indicator_id}` 抢先匹配为 id=`custom`，整型校验失败返回 422；在 `main.py` 中将自定义指标路由先于内置指标路由注册。
+- 修复：Tushare `index_daily` 成交额字段为千元，入库未换算导致复盘股指卡片成交额约小 1000 倍；指数日线同步时改为按元写入；需对已登记指数重新拉取日线以修正存量。
+- 指标库对齐 PRD：`user_indicators.definition_json`（SQLite 启动 `ALTER`）；`user_indicator_dsl.py` 校验 + 环检测；`user_indicator_compute.py` 拓扑求值与试算；`builtin-catalog`、`validate-definition`、创建/更新带试算；前端 `UserIndicatorBuilder` 可视化 DSL；保留旧版 expr。
+- DSL 公式节点 **`rolling`**（字段 + 窗口 N + avg/min/max）；指标库试算与校验支持；K 线与选股求值共用 `user_indicator_compute`。
+- 试算样本行增加 **`diagnostics`**；指标库页试算表展示诊断列；失败场景可区分子线、日期、窗口不足、除零、缺内置/兄弟线引用等。
+- **条件选股**：`POST /api/screening/run` + `services/screening_runner.py`；前端 `/screening`；扫描指定交易日全市场**未复权**日线截面，支持 DSL 子线或 legacy expr、比较符与阈值。
+- **K 线副图自定义指标**：`GET /api/bars/custom-indicator-series` + `custom_indicator_daily_points`（与所选 **adj** 一致）；前端日 K 副图可选「自定义」；非日 K 不叠加自定义序列。
+- 修复：个股列表表头排序第三次点击无响应（Ant Design 会传 `order: null`）；仅在 `onChange` 的 `action === 'sort'` 时更新排序并在取消态下对当前列反向切换；分页导致的 `onChange` 不再误用排序快照把页码锁回第 1 页。
+
+
 ## 模板（后续版本直接复制）
 
 ### Vx.y.z

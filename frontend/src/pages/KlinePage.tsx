@@ -1,11 +1,15 @@
-import { Alert, Button, Card, InputNumber, Radio, Select, Space, Spin, Typography } from "antd";
+import { Alert, Button, Card, InputNumber, Radio, Select, Space, Spin, Typography, message } from "antd";
 import * as echarts from "echarts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   type AdjType,
   type BarPoint,
   type Interval,
+  type UserIndicatorOut,
   fetchBars,
+  fetchCustomIndicatorSeries,
+  fetchCustomIndicators,
   fetchSymbols,
   getApiErrorMessage,
 } from "../api/client";
@@ -19,9 +23,21 @@ const intervals: { label: string; value: Interval }[] = [
 ];
 
 type MainIndicator = "none" | "MA" | "EXPMA" | "BOLL";
-type SubIndicator = "VOL" | "MACD" | "KDJ";
+type SubIndicator = "VOL" | "MACD" | "KDJ" | "CUSTOM";
+
+function chartSubKeysForKline(def: Record<string, unknown> | null | undefined): { value: string; label: string }[] {
+  const subs = def?.sub_indicators as
+    | { key?: string; name?: string; use_in_chart?: boolean; auxiliary_only?: boolean }[]
+    | undefined;
+  if (!Array.isArray(subs)) return [];
+  return subs
+    .filter((s) => s.key && s.use_in_chart !== false && !s.auxiliary_only)
+    .map((s) => ({ value: s.key!, label: `${s.name || s.key}` }));
+}
 
 export default function KlinePage() {
+  const [searchParams] = useSearchParams();
+  const tsFromUrl = searchParams.get("ts_code");
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstance = useRef<echarts.ECharts | null>(null);
   /** 用户拖拽/滑块缩放后的可视区间（百分比）；切换标的或周期时清空，切换复权时保留以便对比同一窗口。 */
@@ -46,6 +62,17 @@ export default function KlinePage() {
   const [macdSignal, setMacdSignal] = useState<number>(9);
   const [kdjN, setKdjN] = useState<number>(9);
   const [adjType, setAdjType] = useState<AdjType>("none");
+  const [customIndicators, setCustomIndicators] = useState<UserIndicatorOut[]>([]);
+  const [customUserIndId, setCustomUserIndId] = useState<number | undefined>();
+  const [customSubKey, setCustomSubKey] = useState<string | undefined>();
+  const [customSeriesTitle, setCustomSeriesTitle] = useState<string>("自定义指标");
+  const [customPoints, setCustomPoints] = useState<{ time: string; value: number | null }[]>([]);
+
+  const customAligned = useMemo(() => {
+    if (!customPoints.length) return [] as (number | null)[];
+    const m = new Map(customPoints.map((p) => [p.time, p.value]));
+    return bars.map((b) => (m.has(b.time) ? (m.get(b.time) ?? null) : null));
+  }, [bars, customPoints]);
 
   const formatVolume = (v: number): string => {
     const n = Number(v) || 0;
@@ -158,18 +185,22 @@ export default function KlinePage() {
     void (async () => {
       try {
         const rows = await fetchSymbols();
-        setSymbols(
-          rows.map((r) => ({
-            value: r.ts_code,
-            label: r.name ? `${r.ts_code} ${r.name}` : r.ts_code,
-          })),
-        );
-        setTsCode((prev) => prev ?? rows[0]?.ts_code);
+        const code = tsFromUrl?.trim() || "";
+        const opts = rows.map((r) => ({
+          value: r.ts_code,
+          label: r.name ? `${r.ts_code} ${r.name}` : r.ts_code,
+        }));
+        // 复盘等入口可能带指数代码跳转；若不在本地 symbols 表里，仍加入下拉以便展示并请求 /bars
+        if (code && !rows.some((r) => r.ts_code === code)) {
+          opts.unshift({ value: code, label: code });
+        }
+        setSymbols(opts);
+        setTsCode(code || rows[0]?.ts_code);
       } catch (e) {
         setError(getApiErrorMessage(e));
       }
     })();
-  }, []);
+  }, [tsFromUrl]);
 
   const loadBars = useCallback(async () => {
     if (!tsCode) {
@@ -192,6 +223,72 @@ export default function KlinePage() {
   useEffect(() => {
     void loadBars();
   }, [loadBars]);
+
+  useEffect(() => {
+    if (interval !== "1d" && subIndicator === "CUSTOM") {
+      setSubIndicator("VOL");
+      message.warning("自定义副图仅支持日 K，已切换为成交量");
+    }
+  }, [interval, subIndicator]);
+
+  useEffect(() => {
+    if (subIndicator !== "CUSTOM") return;
+    void (async () => {
+      try {
+        const rows = await fetchCustomIndicators();
+        setCustomIndicators(rows.filter((r) => r.kind === "dsl" && r.definition));
+      } catch {
+        setCustomIndicators([]);
+      }
+    })();
+  }, [subIndicator]);
+
+  useEffect(() => {
+    if (subIndicator !== "CUSTOM" || !customIndicators.length) return;
+    if (customUserIndId != null && customIndicators.some((x) => x.id === customUserIndId)) return;
+    const first = customIndicators[0];
+    setCustomUserIndId(first.id);
+    setCustomSubKey(chartSubKeysForKline(first.definition ?? null)[0]?.value);
+  }, [subIndicator, customIndicators, customUserIndId]);
+
+  const selectedCustomInd = useMemo(
+    () => customIndicators.find((x) => x.id === customUserIndId),
+    [customIndicators, customUserIndId],
+  );
+  const customSubOptions = useMemo(
+    () => chartSubKeysForKline(selectedCustomInd?.definition ?? null),
+    [selectedCustomInd],
+  );
+
+  useEffect(() => {
+    if (subIndicator !== "CUSTOM" || interval !== "1d" || !tsCode || !customUserIndId || !customSubKey) {
+      setCustomPoints([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const s = await fetchCustomIndicatorSeries({
+          ts_code: tsCode,
+          user_indicator_id: customUserIndId,
+          sub_key: customSubKey,
+          adj: adjType,
+        });
+        if (!cancelled) {
+          setCustomPoints(s.points);
+          setCustomSeriesTitle(`${s.display_name}·${s.sub_key}`);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setCustomPoints([]);
+          setError(getApiErrorMessage(e));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [subIndicator, interval, tsCode, customUserIndId, customSubKey, adjType]);
 
   useEffect(() => {
     dataZoomPreserveRef.current = null;
@@ -453,11 +550,21 @@ export default function KlinePage() {
               lineStyle: { width: 1.2, color: "#ff7875" },
             },
           );
+        } else if (subIndicator === "CUSTOM") {
+          arr.push({
+            type: "line",
+            name: customSeriesTitle,
+            xAxisIndex: 1,
+            yAxisIndex: 1,
+            data: customAligned,
+            symbol: "none",
+            lineStyle: { width: 1.5, color: "#2563eb" },
+          });
         }
         return arr;
       })(),
     };
-  }, [bars, chartWidth, indicatorData, mainIndicator, subIndicator]);
+  }, [bars, chartWidth, indicatorData, mainIndicator, subIndicator, customAligned, customSeriesTitle]);
 
   useEffect(() => {
     const el = chartRef.current;
@@ -573,6 +680,7 @@ export default function KlinePage() {
               { value: "VOL", label: "副图: 成交量" },
               { value: "MACD", label: "副图: MACD" },
               { value: "KDJ", label: "副图: KDJ" },
+              { value: "CUSTOM", label: "副图: 自定义指标（日K）" },
             ]}
           />
           {mainIndicator === "MA" ? (
@@ -619,6 +727,33 @@ export default function KlinePage() {
             <Space>
               <Typography.Text type="secondary">KDJ N</Typography.Text>
               <InputNumber min={5} max={60} size="small" value={kdjN} onChange={(v) => setKdjN(Number(v) || 9)} />
+            </Space>
+          ) : null}
+          {subIndicator === "CUSTOM" && interval === "1d" ? (
+            <Space wrap>
+              <Typography.Text type="secondary">自定义</Typography.Text>
+              <Select
+                style={{ minWidth: 200 }}
+                placeholder="已保存 DSL 指标"
+                value={customUserIndId}
+                options={customIndicators.map((r) => ({
+                  value: r.id,
+                  label: `${r.display_name} (${r.code})`,
+                }))}
+                onChange={(id) => {
+                  setCustomUserIndId(id);
+                  const row = customIndicators.find((x) => x.id === id);
+                  const sk0 = chartSubKeysForKline(row?.definition ?? null)[0]?.value;
+                  setCustomSubKey(sk0);
+                }}
+              />
+              <Select
+                style={{ minWidth: 140 }}
+                placeholder="子线"
+                value={customSubKey}
+                options={customSubOptions}
+                onChange={setCustomSubKey}
+              />
             </Space>
           ) : null}
           <Space>

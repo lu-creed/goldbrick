@@ -13,7 +13,6 @@ class Symbol(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     ts_code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -82,6 +81,9 @@ class SyncRun(Base):
     status: Mapped[str] = mapped_column(String(32))
     message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     log_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # 协作式控制：工作线程在「每只标的开始处理前」读库轮询；无法打断单标的内部的 Tushare 请求。
+    pause_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class AppSetting(Base):
@@ -99,6 +101,9 @@ class InstrumentMeta(Base):
     name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     asset_type: Mapped[str] = mapped_column(String(16), default="stock")  # stock | index
     list_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True)
+    # 个股：Tushare stock_basic 的 market（主板/创业板/科创板等）、exchange（SSE/SZSE/BSE）
+    market: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    exchange: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -140,3 +145,35 @@ class IndicatorSubIndicator(Base):
     can_be_price: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
     indicator: Mapped["Indicator"] = relationship(back_populates="sub_indicators")
+
+class IndicatorPreDaily(Base):
+    """日线指标预计算；阶段一仅写入 adj_mode=qfq（前复权），与全市场回测口径一致。"""
+    __tablename__ = "indicator_pre_daily"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), index=True)
+    trade_date: Mapped[Date] = mapped_column(Date, index=True)
+    adj_mode: Mapped[str] = mapped_column(String(8), default="none")
+    payload: Mapped[str] = mapped_column(Text, default="{}")  # JSON 字典，键为子指标名
+
+    __table_args__ = (
+        UniqueConstraint("symbol_id", "trade_date", "adj_mode", name="uq_indicator_pre_symbol_date_adj"),
+    )
+
+
+class UserIndicator(Base):
+    """用户自定义指标：PRD DSL（definition_json）或与旧版兼容的单条 expr。"""
+
+    __tablename__ = "user_indicators"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # 旧版：单条四则表达式。新版可为空串，完整定义见 definition_json。
+    expr: Mapped[str] = mapped_column(Text, default="")
+    definition_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+

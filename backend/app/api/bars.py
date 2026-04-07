@@ -1,3 +1,9 @@
+"""K 线接口（路径前缀 /bars，完整为 /api/bars）。
+
+从数据库读出日线，按需复权，再聚合成周/月等周期。计算在 app/services/aggregation.py、adj.py。
+对应前端：K 线页调用 fetchBars。
+"""
+
 from datetime import date
 from typing import Optional
 
@@ -6,9 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import BarDaily, Symbol
-from app.schemas import BarPoint, Interval
+from app.schemas import BarPoint, CustomIndicatorPoint, CustomIndicatorSeriesOut, Interval
 from app.services.adj import AdjType, apply_adj, build_adj_map, get_latest_factor
 from app.services.aggregation import DailyRow, aggregate_bars
+from app.services.user_indicator_compute import custom_indicator_daily_points
 
 router = APIRouter(prefix="/bars", tags=["bars"])
 
@@ -59,3 +66,34 @@ def get_bars(
         for b in rows_db
     ]
     return aggregate_bars(rows, interval)
+
+
+@router.get("/custom-indicator-series", response_model=CustomIndicatorSeriesOut)
+def get_custom_indicator_series(
+    ts_code: str = Query(...),
+    user_indicator_id: int = Query(..., ge=1),
+    sub_key: str = Query(..., min_length=1, max_length=64),
+    adj: AdjType = Query("none"),
+    start: Optional[date] = Query(None),
+    end: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """自定义指标子线日线序列（与当前 K 线选择的复权方式对齐；前端请在日 K 下叠加）。"""
+    raw = custom_indicator_daily_points(
+        db,
+        ts_code=ts_code,
+        user_indicator_id=user_indicator_id,
+        sub_key=sub_key.strip(),
+        adj=adj,
+        start=start,
+        end=end,
+    )
+    if not raw.get("ok"):
+        raise HTTPException(status_code=400, detail=raw.get("message") or "计算失败")
+    return CustomIndicatorSeriesOut(
+        ts_code=ts_code.strip().upper(),
+        user_indicator_id=user_indicator_id,
+        sub_key=sub_key.strip(),
+        display_name=str(raw.get("display_name") or ""),
+        points=[CustomIndicatorPoint(**p) for p in raw["points"]],
+    )
