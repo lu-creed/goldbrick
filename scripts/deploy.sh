@@ -6,7 +6,7 @@
 
 set -e
 
-REPO="https://github.com/lu-creed/goldbrick.git"
+REPO="https://mirror.ghproxy.com/https://github.com/lu-creed/goldbrick.git"
 APP_DIR="/opt/goldbrick"
 BACKEND_PORT=8000
 NGINX_PORT=80
