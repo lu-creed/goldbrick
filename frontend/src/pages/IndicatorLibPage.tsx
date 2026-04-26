@@ -1,3 +1,16 @@
+/**
+ * 指标库页面
+ *
+ * 功能：管理所有技术指标，分为两大类：
+ * - 内置指标（Builtin）：系统预置，如 MA、MACD、KDJ、BOLL 等，只可查看
+ * - 自定义指标（Custom）：用户自己定义，可新建、编辑、删除
+ *
+ * 自定义指标支持两种形式：
+ * - DSL 模式（推荐）：通过可视化构建器配置多参数、多子线、公式树
+ * - 旧版表达式（Legacy）：单行 Python 风格表达式，功能受限
+ *
+ * 保存前必须用一只股票做「试算」，确保公式正确才能保存。
+ */
 import { ArrowLeftOutlined, DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { Button, Card, Collapse, Descriptions, Form, Input, Modal, Radio, Space, Table, Tabs, Tag, Typography, message, theme } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -25,10 +38,18 @@ import {
   type UserIndicatorOut,
   type UserIndicatorValidateOut,
 } from "../api/client";
+import { zebraRowClass } from "../constants/theme";
 
 const { Text } = Typography;
 const { TextArea } = Input;
 
+/**
+ * 把后端返回的指标定义 JSON 规范化为前端 Draft 格式
+ * 补全缺失字段的默认值，确保构建器组件可以正常渲染
+ *
+ * @param d - 后端原始定义对象
+ * @returns 标准化后的 UserIndicatorDefinitionDraft
+ */
 function normalizeDefinition(d: Record<string, unknown>): UserIndicatorDefinitionDraft {
   const subs = (d.sub_indicators as Record<string, unknown>[]) || [];
   return {
@@ -133,6 +154,40 @@ export default function IndicatorLibPage() {
     }
   };
 
+  /* 试算表：附 diagnostics 简要展示 */
+  const sampleCols: ColumnsType<NonNullable<UserIndicatorValidateOut["sample_rows"]>[0]> = useMemo(() => {
+    const diagRender = (
+      d: NonNullable<UserIndicatorValidateOut["sample_rows"]>[0]["diagnostics"],
+    ) =>
+      d?.length ? d.map((x) => `${x.code ?? ""}${x.detail ? `: ${x.detail}` : ""}`).join("；") : "—";
+    const keys = validateResult?.report_keys?.length
+      ? validateResult.report_keys
+      : validateResult?.sample_rows?.[0]?.values
+        ? Object.keys(validateResult.sample_rows[0].values || {})
+        : [];
+    if (keys.length) {
+      return [
+        { title: "交易日", dataIndex: "trade_date", width: 120 },
+        ...keys.map((k) => ({
+          title: k,
+          key: k,
+          render: (_: unknown, r: NonNullable<UserIndicatorValidateOut["sample_rows"]>[0]) => {
+            const x = r.values?.[k];
+            return x == null ? "—" : Number(x).toFixed(6);
+          },
+        })),
+        { title: "错误", dataIndex: "error", ellipsis: true, render: (e: string | null) => e ?? "—" },
+        { title: "诊断", dataIndex: "diagnostics", ellipsis: true, render: diagRender },
+      ];
+    }
+    return [
+      { title: "交易日", dataIndex: "trade_date" },
+      { title: "值", dataIndex: "value", render: (v: number | null | undefined) => (v == null ? "—" : v.toFixed(6)) },
+      { title: "错误", dataIndex: "error", render: (e: string | null) => e ?? "—" },
+      { title: "诊断", dataIndex: "diagnostics", ellipsis: true, render: diagRender },
+    ];
+  }, [validateResult]);
+
   const openCreateModal = () => {
     setEditing(null);
     setValidateResult(null);
@@ -166,7 +221,7 @@ export default function IndicatorLibPage() {
   const runValidate = async () => {
     const ts_code = (form.getFieldValue("ts_code") || "").trim();
     if (!ts_code) {
-      message.warning("请填写试算用 ts_code");
+      message.warning("请填写验证用股票代码");
       return;
     }
     setValidating(true);
@@ -370,40 +425,6 @@ export default function IndicatorLibPage() {
     );
   }
 
-  /* 试算表：附 diagnostics 简要展示 */
-  const sampleCols: ColumnsType<NonNullable<UserIndicatorValidateOut["sample_rows"]>[0]> = useMemo(() => {
-    const diagRender = (
-      d: NonNullable<UserIndicatorValidateOut["sample_rows"]>[0]["diagnostics"],
-    ) =>
-      d?.length ? d.map((x) => `${x.code ?? ""}${x.detail ? `: ${x.detail}` : ""}`).join("；") : "—";
-    const keys = validateResult?.report_keys?.length
-      ? validateResult.report_keys
-      : validateResult?.sample_rows?.[0]?.values
-        ? Object.keys(validateResult.sample_rows[0].values || {})
-        : [];
-    if (keys.length) {
-      return [
-        { title: "交易日", dataIndex: "trade_date", width: 120 },
-        ...keys.map((k) => ({
-          title: k,
-          key: k,
-          render: (_: unknown, r: NonNullable<UserIndicatorValidateOut["sample_rows"]>[0]) => {
-            const x = r.values?.[k];
-            return x == null ? "—" : Number(x).toFixed(6);
-          },
-        })),
-        { title: "错误", dataIndex: "error", ellipsis: true, render: (e: string | null) => e ?? "—" },
-        { title: "诊断", dataIndex: "diagnostics", ellipsis: true, render: diagRender },
-      ];
-    }
-    return [
-      { title: "交易日", dataIndex: "trade_date" },
-      { title: "值", dataIndex: "value", render: (v: number | null | undefined) => (v == null ? "—" : v.toFixed(6)) },
-      { title: "错误", dataIndex: "error", render: (e: string | null) => e ?? "—" },
-      { title: "诊断", dataIndex: "diagnostics", ellipsis: true, render: diagRender },
-    ];
-  }, [validateResult]);
-
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
       <Typography.Title level={4} style={{ margin: 0 }}>指标库</Typography.Title>
@@ -426,6 +447,7 @@ export default function IndicatorLibPage() {
                   dataSource={list}
                   pagination={false}
                   size="middle"
+                  rowClassName={zebraRowClass}
                   onRow={(r) => ({ onClick: () => void openDetail(r.id), style: { cursor: "pointer" } })}
                 />
               </Card>
@@ -439,14 +461,14 @@ export default function IndicatorLibPage() {
                 <Space wrap>
                   <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>新建</Button>
                   <Text type="secondary">
-                    PRD：多参数、多子线、公式树（引用内置子线 / 兄弟子线 + 取数方式）；保存前用样本标的试算。
+                    支持多参数、多子线与公式树；保存前需用一只股票验证公式正确性。
                   </Text>
                 </Space>
                 <Collapse
                   items={[
                     {
                       key: "vars",
-                      label: `旧版 expr 可用变量名（共 ${varNames.length} 个）`,
+                      label: `单行表达式指标可用变量（共 ${varNames.length} 个）`,
                       children: (
                         <div style={{ maxHeight: 160, overflow: "auto", fontSize: 12, color: token.colorTextSecondary }}>
                           {varNames.join("、")}
@@ -456,7 +478,7 @@ export default function IndicatorLibPage() {
                   ]}
                 />
                 <Card>
-                  <Table rowKey="id" loading={customLoading} columns={customColumns} dataSource={customList} pagination={false} />
+                  <Table rowKey="id" loading={customLoading} columns={customColumns} dataSource={customList} pagination={false} rowClassName={zebraRowClass} />
                 </Card>
               </Space>
             ),
@@ -486,14 +508,14 @@ export default function IndicatorLibPage() {
           {!editing && (
             <Form.Item label="编辑形式">
               <Radio.Group value={editorMode} onChange={(e) => setEditorMode(e.target.value)}>
-                <Radio.Button value="dsl">PRD 指标构建器</Radio.Button>
-                <Radio.Button value="legacy">旧版单条表达式</Radio.Button>
+                <Radio.Button value="dsl">可视化构建器</Radio.Button>
+                <Radio.Button value="legacy">单行表达式</Radio.Button>
               </Radio.Group>
             </Form.Item>
           )}
           {editing?.kind === "legacy" && (
             <Typography.Paragraph type="warning">
-              当前为旧版表达式指标；保存时可改为完整定义请新建一条或后续再提供「升级为 DSL」。
+              当前指标使用单行表达式，不支持多子线；如需完整功能，请新建一条指标。
             </Typography.Paragraph>
           )}
           {editorMode === "dsl" && (
@@ -508,7 +530,7 @@ export default function IndicatorLibPage() {
               <TextArea rows={4} placeholder="例：(close - MA20) / MA20 * 100" />
             </Form.Item>
           )}
-          <Form.Item name="ts_code" label="试算 / 保存校验用标的" extra="后端会按该代码拉取本地日线做试算（请保证已同步）">
+          <Form.Item name="ts_code" label="验证用股票代码" extra="填写一只已同步数据的股票代码，用于保存前验证公式（如 600000.SH）">
             <Input placeholder="600000.SH" />
           </Form.Item>
           <Space>

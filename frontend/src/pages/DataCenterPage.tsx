@@ -1,3 +1,15 @@
+/**
+ * 数据池页面
+ *
+ * 功能：查看和管理本地已同步的股票/指数数据，包括：
+ * - 个股页签：显示全部已登记个股的同步状态（K 线条数、复权因子状态等）
+ * - 指数页签：管理已登记的指数（可从 Tushare 选择指数加入）
+ * - 批量/单个同步操作（触发拉取任务，进度在「数据同步」页查看）
+ * - 日线明细弹窗：查看某只股票的历史 K 线数据
+ *
+ * 注意：这里展示的是运维信息（条数、同步状态），不是行情数据。
+ * 行情数据（涨跌幅、价格等）请使用「数据看板·个股列表」页面。
+ */
 import {
   Button,
   Card,
@@ -30,6 +42,7 @@ import {
   syncStockListMeta,
   triggerSingleDaySync,
 } from "../api/client";
+import { zebraRowClass } from "../constants/theme";
 
 type SyncingMap = Record<string, boolean>;
 
@@ -518,6 +531,7 @@ export default function DataCenterPage() {
           })}
           columns={columns}
           dataSource={filtered}
+          rowClassName={zebraRowClass}
           pagination={{
             current: currentPage,
             pageSize,

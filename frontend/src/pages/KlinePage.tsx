@@ -1,3 +1,15 @@
+/**
+ * K 线页面
+ *
+ * 这是整个应用的核心查看页面，功能包括：
+ * - 选择股票标的、K 线周期（日/周/月/季/年）、复权方式（不复权/前复权/后复权）
+ * - 主图叠加均线指标：MA、EXPMA、BOLL
+ * - 副图切换：成交量、MACD、KDJ、自定义 DSL 指标
+ * - 图表缩放/平移（鼠标拖拽 + 底部滑块 + 按钮）
+ * - 鼠标悬停时弹出 tooltip 显示 OHLC 及换手率等信息
+ *
+ * 技术实现：ECharts 蜡烛图（candlestick） + 所有指标均前端计算
+ */
 import { Alert, Button, Card, InputNumber, Radio, Select, Space, Spin, Typography, message } from "antd";
 import * as echarts from "echarts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,7 +25,9 @@ import {
   fetchSymbols,
   getApiErrorMessage,
 } from "../api/client";
+import { ECHARTS_BASE_OPTION, FALL_COLOR, MA_COLORS, RISE_COLOR } from "../constants/theme";
 
+/** K 线周期选项列表（周期值与后端接口对应） */
 const intervals: { label: string; value: Interval }[] = [
   { label: "日 K", value: "1d" },
   { label: "周 K", value: "1w" },
@@ -22,9 +36,18 @@ const intervals: { label: string; value: Interval }[] = [
   { label: "年 K", value: "1y" },
 ];
 
+/** 主图指标类型（叠加在蜡烛图上方） */
 type MainIndicator = "none" | "MA" | "EXPMA" | "BOLL";
+/** 副图指标类型（显示在蜡烛图下方的独立区域） */
 type SubIndicator = "VOL" | "MACD" | "KDJ" | "CUSTOM";
 
+/**
+ * 从自定义指标定义中提取「可在 K 线副图绘制」的子线选项
+ * 过滤掉 use_in_chart=false 和 auxiliary_only=true 的子线
+ *
+ * @param def - 指标定义对象（来自后端的 JSON 配置）
+ * @returns 子线下拉选项列表 { value: key, label: name }
+ */
 function chartSubKeysForKline(def: Record<string, unknown> | null | undefined): { value: string; label: string }[] {
   const subs = def?.sub_indicators as
     | { key?: string; name?: string; use_in_chart?: boolean; auxiliary_only?: boolean }[]
@@ -36,44 +59,70 @@ function chartSubKeysForKline(def: Record<string, unknown> | null | undefined): 
 }
 
 export default function KlinePage() {
+  // searchParams：从 URL 读取 ?ts_code=xxx 参数（其他页面跳转过来时会带上）
   const [searchParams] = useSearchParams();
   const tsFromUrl = searchParams.get("ts_code");
-  const chartRef = useRef<HTMLDivElement>(null);
-  const chartInstance = useRef<echarts.ECharts | null>(null);
-  /** 用户拖拽/滑块缩放后的可视区间（百分比）；切换标的或周期时清空，切换复权时保留以便对比同一窗口。 */
-  const dataZoomPreserveRef = useRef<{ start: number; end: number } | null>(null);
-  const [symbols, setSymbols] = useState<{ label: string; value: string }[]>(
-    [],
-  );
-  const [tsCode, setTsCode] = useState<string | undefined>();
-  const [interval, setInterval] = useState<Interval>("1d");
-  const [bars, setBars] = useState<BarPoint[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [chartWidth, setChartWidth] = useState(980);
-  const [mainIndicator, setMainIndicator] = useState<MainIndicator>("none");
-  const [subIndicator, setSubIndicator] = useState<SubIndicator>("VOL");
-  const [maPeriods, setMaPeriods] = useState<number[]>([5, 10, 20]);
-  const [expmaPeriod, setExpmaPeriod] = useState<number>(12);
-  const [bollN, setBollN] = useState<number>(20);
-  const [bollK, setBollK] = useState<number>(2);
-  const [macdFast, setMacdFast] = useState<number>(12);
-  const [macdSlow, setMacdSlow] = useState<number>(26);
-  const [macdSignal, setMacdSignal] = useState<number>(9);
-  const [kdjN, setKdjN] = useState<number>(9);
-  const [adjType, setAdjType] = useState<AdjType>("none");
-  const [customIndicators, setCustomIndicators] = useState<UserIndicatorOut[]>([]);
-  const [customUserIndId, setCustomUserIndId] = useState<number | undefined>();
-  const [customSubKey, setCustomSubKey] = useState<string | undefined>();
-  const [customSeriesTitle, setCustomSeriesTitle] = useState<string>("自定义指标");
-  const [customPoints, setCustomPoints] = useState<{ time: string; value: number | null }[]>([]);
 
+  // chartRef：指向 ECharts 图表容器 DOM 元素
+  const chartRef = useRef<HTMLDivElement>(null);
+  // chartInstance：保存 ECharts 实例，避免每次更新 option 都重新创建
+  const chartInstance = useRef<echarts.ECharts | null>(null);
+  // dataZoomPreserveRef：记录用户当前的可视区间（拖拽后保留），
+  // 切换标的或周期时清空（重置到默认显示最近 30%），切换复权时保留
+  const dataZoomPreserveRef = useRef<{ start: number; end: number } | null>(null);
+
+  // symbols：股票列表（下拉选择框的选项）
+  const [symbols, setSymbols] = useState<{ label: string; value: string }[]>([]);
+  // tsCode：当前选中的股票代码
+  const [tsCode, setTsCode] = useState<string | undefined>();
+  // interval：当前 K 线周期
+  const [interval, setInterval] = useState<Interval>("1d");
+  // bars：当前标的的 K 线数据（每个元素是一根蜡烛）
+  const [bars, setBars] = useState<BarPoint[]>([]);
+  // loading：是否正在加载 K 线数据
+  const [loading, setLoading] = useState(false);
+  // error：错误信息（非 null 时显示错误提示条）
+  const [error, setError] = useState<string | null>(null);
+  // chartWidth：图表当前宽度（单位像素），用于自适应坐标轴左边距
+  const [chartWidth, setChartWidth] = useState(980);
+
+  // 主图指标参数
+  const [mainIndicator, setMainIndicator] = useState<MainIndicator>("none");
+  const [maPeriods, setMaPeriods] = useState<number[]>([5, 10, 20]); // MA 均线周期列表
+  const [expmaPeriod, setExpmaPeriod] = useState<number>(12);         // EXPMA 周期
+  const [bollN, setBollN] = useState<number>(20);                     // BOLL 计算周期 N
+  const [bollK, setBollK] = useState<number>(2);                      // BOLL 标准差倍数 K
+
+  // 副图指标参数
+  const [subIndicator, setSubIndicator] = useState<SubIndicator>("VOL");
+  const [macdFast, setMacdFast] = useState<number>(12);   // MACD 快线周期
+  const [macdSlow, setMacdSlow] = useState<number>(26);   // MACD 慢线周期
+  const [macdSignal, setMacdSignal] = useState<number>(9); // MACD 信号线周期
+  const [kdjN, setKdjN] = useState<number>(9);             // KDJ 计算周期 N
+
+  // 复权方式
+  const [adjType, setAdjType] = useState<AdjType>("none");
+
+  // 自定义指标相关状态
+  const [customIndicators, setCustomIndicators] = useState<UserIndicatorOut[]>([]); // 已保存的自定义指标列表
+  const [customUserIndId, setCustomUserIndId] = useState<number | undefined>();      // 当前选中的指标 ID
+  const [customSubKey, setCustomSubKey] = useState<string | undefined>();            // 当前选中的子线 key
+  const [customSeriesTitle, setCustomSeriesTitle] = useState<string>("自定义指标"); // 副图图例标题
+  const [customPoints, setCustomPoints] = useState<{ time: string; value: number | null }[]>([]); // 原始数据点
+
+  /**
+   * 将自定义指标的数据点与 bars 时间轴对齐
+   * ECharts 要求数据数组长度与 category 数组完全一致，没有对应时间点时填 null
+   */
   const customAligned = useMemo(() => {
     if (!customPoints.length) return [] as (number | null)[];
     const m = new Map(customPoints.map((p) => [p.time, p.value]));
     return bars.map((b) => (m.has(b.time) ? (m.get(b.time) ?? null) : null));
   }, [bars, customPoints]);
 
+  /**
+   * 把成交量数字格式化为"X 亿"或"X 万"（用于副图 Y 轴标签）
+   */
   const formatVolume = (v: number): string => {
     const n = Number(v) || 0;
     const abs = Math.abs(n);
@@ -82,11 +131,19 @@ export default function KlinePage() {
     return `${Math.round(n)}`;
   };
 
+  /**
+   * 前端计算所有技术指标数据
+   * 每当 bars 或各指标参数变化时重新计算
+   *
+   * 包含：MA（简单移动平均）、EXPMA（指数移动平均）、BOLL 布林带、
+   * MACD、KDJ
+   */
   const indicatorData = useMemo(() => {
     const closes = bars.map((b) => b.close);
     const highs = bars.map((b) => b.high);
     const lows = bars.map((b) => b.low);
 
+    // MA：滑动窗口求均值，窗口期前的位置返回 null（无法计算）
     const calcMA = (period: number): Array<number | null> =>
       closes.map((_, i) => {
         if (i < period - 1) return null;
@@ -98,6 +155,7 @@ export default function KlinePage() {
       maMap[String(p)] = calcMA(p);
     });
 
+    // EXPMA：指数加权移动平均，alpha = 2/(N+1)
     const expma: Array<number | null> = [];
     const alphaExp = 2 / (expmaPeriod + 1);
     closes.forEach((c, i) => {
@@ -105,6 +163,7 @@ export default function KlinePage() {
       else expma.push(alphaExp * c + (1 - alphaExp) * (expma[i - 1] ?? c));
     });
 
+    // BOLL 布林带：中轨 = N 日均值，上轨 = 中轨 + K*标准差，下轨 = 中轨 - K*标准差
     const bollMid: Array<number | null> = closes.map((_, i) => {
       if (i < bollN - 1) return null;
       const slice = closes.slice(i - bollN + 1, i + 1);
@@ -124,6 +183,7 @@ export default function KlinePage() {
       m == null || bollStd[i] == null ? null : m - bollK * (bollStd[i] as number),
     );
 
+    // MACD：DIF = EMA(fast) - EMA(slow)；DEA = EMA(DIF, signal)；MACD 柱 = (DIF - DEA) * 2
     const ema12: number[] = [];
     const ema26: number[] = [];
     const alpha12 = 2 / (macdFast + 1);
@@ -146,6 +206,7 @@ export default function KlinePage() {
     });
     const macd = dif.map((d, i) => (d - dea[i]) * 2);
 
+    // KDJ：RSV = (收 - N日最低) / (N日最高 - N日最低) * 100；K、D 用加权平均迭代
     const k: number[] = [];
     const d: number[] = [];
     const j: number[] = [];
@@ -166,21 +227,10 @@ export default function KlinePage() {
       dPrev = dNow;
     });
 
-    return {
-      maMap,
-      expma,
-      bollUp,
-      bollMid,
-      bollDn,
-      dif,
-      dea,
-      macd,
-      k,
-      d,
-      j,
-    };
+    return { maMap, expma, bollUp, bollMid, bollDn, dif, dea, macd, k, d, j };
   }, [bars, maPeriods, expmaPeriod, bollN, bollK, macdFast, macdSlow, macdSignal, kdjN]);
 
+  // 首次加载：获取股票列表，并自动选中 URL 参数指定的标的
   useEffect(() => {
     void (async () => {
       try {
@@ -190,7 +240,8 @@ export default function KlinePage() {
           value: r.ts_code,
           label: r.name ? `${r.ts_code} ${r.name}` : r.ts_code,
         }));
-        // 复盘等入口可能带指数代码跳转；若不在本地 symbols 表里，仍加入下拉以便展示并请求 /bars
+        // 复盘等页面跳转过来时可能带有指数代码（如 000001.SH），
+        // 指数不在个股列表里，但仍允许查看其 K 线，所以手动插入下拉选项
         if (code && !rows.some((r) => r.ts_code === code)) {
           opts.unshift({ value: code, label: code });
         }
@@ -202,6 +253,10 @@ export default function KlinePage() {
     })();
   }, [tsFromUrl]);
 
+  /**
+   * 加载当前标的的 K 线数据
+   * 依赖：tsCode、interval、adjType（三者任一变化时重新请求）
+   */
   const loadBars = useCallback(async () => {
     if (!tsCode) {
       setBars([]);
@@ -224,6 +279,7 @@ export default function KlinePage() {
     void loadBars();
   }, [loadBars]);
 
+  // 切换到非日 K 时，自动切换副图回「成交量」（自定义指标只支持日 K）
   useEffect(() => {
     if (interval !== "1d" && subIndicator === "CUSTOM") {
       setSubIndicator("VOL");
@@ -231,6 +287,7 @@ export default function KlinePage() {
     }
   }, [interval, subIndicator]);
 
+  // 选择「自定义副图」时，加载已保存的自定义 DSL 指标列表
   useEffect(() => {
     if (subIndicator !== "CUSTOM") return;
     void (async () => {
@@ -243,6 +300,7 @@ export default function KlinePage() {
     })();
   }, [subIndicator]);
 
+  // 自定义指标列表加载后，自动选中第一个指标（如果还没有选中）
   useEffect(() => {
     if (subIndicator !== "CUSTOM" || !customIndicators.length) return;
     if (customUserIndId != null && customIndicators.some((x) => x.id === customUserIndId)) return;
@@ -251,21 +309,24 @@ export default function KlinePage() {
     setCustomSubKey(chartSubKeysForKline(first.definition ?? null)[0]?.value);
   }, [subIndicator, customIndicators, customUserIndId]);
 
+  // 当前选中自定义指标的对象（用于获取其子线配置）
   const selectedCustomInd = useMemo(
     () => customIndicators.find((x) => x.id === customUserIndId),
     [customIndicators, customUserIndId],
   );
+  // 当前选中自定义指标可绘制的子线选项列表
   const customSubOptions = useMemo(
     () => chartSubKeysForKline(selectedCustomInd?.definition ?? null),
     [selectedCustomInd],
   );
 
+  // 获取自定义指标的时间序列数据（按选中的标的、子线、复权方式请求）
   useEffect(() => {
     if (subIndicator !== "CUSTOM" || interval !== "1d" || !tsCode || !customUserIndId || !customSubKey) {
       setCustomPoints([]);
       return;
     }
-    let cancelled = false;
+    let cancelled = false; // 用于取消旧请求（切换股票时旧请求结果不应覆盖新请求）
     void (async () => {
       try {
         const s = await fetchCustomIndicatorSeries({
@@ -290,32 +351,50 @@ export default function KlinePage() {
     };
   }, [subIndicator, interval, tsCode, customUserIndId, customSubKey, adjType]);
 
+  // 切换标的或周期时，清空缩放状态（重置到默认显示最近 30%），切换复权时保留
   useEffect(() => {
     dataZoomPreserveRef.current = null;
   }, [tsCode, interval]);
 
+  /**
+   * 构建 ECharts 图表配置（option）
+   * 每当 bars、指标数据或图表参数变化时重新计算
+   *
+   * 整体布局：
+   * - grid[0]（上方）：K 线蜡烛图 + 主图指标
+   * - grid[1]（下方）：副图（成交量 / MACD / KDJ / 自定义）
+   * - dataZoom：底部滑块 + 内置鼠标拖拽缩放
+   */
   const option = useMemo(() => {
     const zoom = dataZoomPreserveRef.current;
-    const dzStart = zoom?.start ?? 70;
+    const dzStart = zoom?.start ?? 70; // 默认显示最后 30% 的数据
     const dzEnd = zoom?.end ?? 100;
+    // 左边距随图表宽度自适应，避免 Y 轴标签被截断
     const dynamicLeft = chartWidth < 700 ? 92 : chartWidth < 960 ? 82 : 72;
+
     const category = bars.map((b) => b.time);
+    // ECharts 蜡烛图数据格式：[open, close, low, high]（注意顺序）
     const values = bars.map((b) => [b.open, b.close, b.low, b.high] as number[]);
+
+    // 成交量柱颜色：当日涨（收 >= 昨收）用涨色，跌用跌色（A 股配色）
     const volumes = bars.map((b, i) => {
       const prevClose = i > 0 ? bars[i - 1].close : b.open;
       const isUp = b.close >= prevClose;
       return {
         value: b.volume,
-        itemStyle: {
-          color: isUp ? "#ef5350" : "#26a69a",
-        },
+        itemStyle: { color: isUp ? RISE_COLOR : FALL_COLOR },
       };
     });
+
     return {
-      animation: false,
+      animation: false, // 关闭动画提升大数据量渲染性能
+      // 继承暗色主题公共配置（tooltip 样式、文字颜色等）
+      ...ECHARTS_BASE_OPTION,
       tooltip: {
+        ...ECHARTS_BASE_OPTION.tooltip,
         trigger: "axis",
         axisPointer: { type: "cross" },
+        // 自定义 tooltip 显示 OHLCV + 换手率 + 连涨跌统计
         formatter: (params: unknown) => {
           const arr = params as {
             axisValue: string;
@@ -347,11 +426,14 @@ export default function KlinePage() {
         },
       },
       grid: [
+        // 主图区域：蜡烛图 + 主图指标
         { left: dynamicLeft, right: 24, top: 24, height: 300, containLabel: true },
+        // 副图区域：成交量 / MACD / KDJ / 自定义
         { left: dynamicLeft, right: 24, top: 350, height: 110, containLabel: true },
       ],
       dataZoom: [
         {
+          // 内置型（鼠标拖拽）：只允许平移，不允许滚轮缩放（避免误操作）
           type: "inside",
           xAxisIndex: [0, 1],
           start: dzStart,
@@ -361,6 +443,7 @@ export default function KlinePage() {
           moveOnMouseWheel: false,
         },
         {
+          // 滑块型：在图表底部显示可拖拽的时间范围滑块
           show: true,
           type: "slider",
           xAxisIndex: [0, 1],
@@ -371,23 +454,27 @@ export default function KlinePage() {
       ],
       xAxis: [
         {
+          // 主图 X 轴（时间轴）
           type: "category",
           data: category,
           gridIndex: 0,
           scale: true,
           boundaryGap: true,
-          axisLine: { onZero: false },
+          axisLine: { onZero: false, lineStyle: { color: "#444" } },
+          axisTick: { lineStyle: { color: "#444" } },
+          axisLabel: { color: "#8c8c8c" },
           splitLine: { show: false },
           min: "dataMin",
           max: "dataMax",
         },
         {
+          // 副图 X 轴（隐藏标签，只用于数据对齐）
           type: "category",
           data: category,
           gridIndex: 1,
           scale: true,
           boundaryGap: true,
-          axisLine: { onZero: false },
+          axisLine: { onZero: false, lineStyle: { color: "#444" } },
           axisTick: { show: false },
           axisLabel: { show: false },
           splitLine: { show: false },
@@ -396,36 +483,52 @@ export default function KlinePage() {
         },
       ],
       yAxis: [
-        { scale: true, splitArea: { show: true }, gridIndex: 0 },
         {
+          // 主图 Y 轴（价格轴）
+          scale: true,
+          splitArea: { show: true },
+          gridIndex: 0,
+          axisLine: { lineStyle: { color: "#444" } },
+          axisTick: { lineStyle: { color: "#444" } },
+          axisLabel: { color: "#8c8c8c" },
+          splitLine: { lineStyle: { color: "#2a2a2a" } },
+        },
+        {
+          // 副图 Y 轴（根据副图类型格式化标签）
           scale: true,
           splitNumber: 2,
           gridIndex: 1,
+          axisLine: { lineStyle: { color: "#444" } },
+          axisTick: { lineStyle: { color: "#444" } },
           axisLabel: {
+            color: "#8c8c8c",
             formatter: (value: number) => (subIndicator === "VOL" ? formatVolume(value) : `${Number(value).toFixed(2)}`),
             margin: 14,
           },
+          splitLine: { lineStyle: { color: "#2a2a2a" } },
         },
       ],
+      // 动态构建所有图表系列（蜡烛图 + 主图指标 + 副图指标）
       series: (() => {
         const arr: unknown[] = [
           {
+            // K 线蜡烛图：阳线（涨）用 RISE_COLOR，阴线（跌）用 FALL_COLOR（A 股配色）
             type: "candlestick",
             name: "K线",
             data: values,
             xAxisIndex: 0,
             yAxisIndex: 0,
             itemStyle: {
-              color: "#ef5350",
-              color0: "#26a69a",
-              borderColor: "#ef5350",
-              borderColor0: "#26a69a",
+              color: RISE_COLOR,         // 阳线实体填充色（A 股红）
+              color0: FALL_COLOR,        // 阴线实体填充色（A 股绿）
+              borderColor: RISE_COLOR,   // 阳线边框色
+              borderColor0: FALL_COLOR,  // 阴线边框色
             },
           },
         ];
 
+        // 主图指标：MA 均线（用 MA_COLORS 中的颜色依次着色）
         if (mainIndicator === "MA") {
-          const colors = ["#ffd666", "#69c0ff", "#95de64", "#ff85c0", "#b37feb", "#ff9c6e"];
           maPeriods.forEach((p, idx) => {
             arr.push({
               type: "line",
@@ -435,7 +538,7 @@ export default function KlinePage() {
               data: indicatorData.maMap[String(p)] ?? [],
               symbol: "none",
               smooth: true,
-              lineStyle: { width: 1.5, color: colors[idx % colors.length] },
+              lineStyle: { width: 1.5, color: MA_COLORS[idx % MA_COLORS.length] },
             });
           });
         } else if (mainIndicator === "EXPMA") {
@@ -447,7 +550,7 @@ export default function KlinePage() {
             data: indicatorData.expma,
             symbol: "none",
             smooth: true,
-            lineStyle: { width: 1.5, color: "#69c0ff" },
+            lineStyle: { width: 1.5, color: MA_COLORS[1] }, // 天蓝色
           });
         } else if (mainIndicator === "BOLL") {
           arr.push(
@@ -481,13 +584,14 @@ export default function KlinePage() {
           );
         }
 
+        // 副图指标
         if (subIndicator === "VOL") {
           arr.push({
             type: "bar",
             name: "成交量",
             xAxisIndex: 1,
             yAxisIndex: 1,
-            data: volumes,
+            data: volumes, // 颜色已在 volumes 数组中按涨跌预设
           });
         } else if (subIndicator === "MACD") {
           arr.push(
@@ -496,9 +600,10 @@ export default function KlinePage() {
               name: "MACD",
               xAxisIndex: 1,
               yAxisIndex: 1,
+              // MACD 柱：正值（多头趋势）红色，负值（空头趋势）绿色（A 股配色）
               data: indicatorData.macd.map((v) => ({
                 value: v,
-                itemStyle: { color: v >= 0 ? "#ef5350" : "#26a69a" },
+                itemStyle: { color: v >= 0 ? RISE_COLOR : FALL_COLOR },
               })),
             },
             {
@@ -508,7 +613,7 @@ export default function KlinePage() {
               yAxisIndex: 1,
               data: indicatorData.dif,
               symbol: "none",
-              lineStyle: { width: 1.2, color: "#ffd666" },
+              lineStyle: { width: 1.2, color: "#ffd666" }, // 金黄
             },
             {
               type: "line",
@@ -517,7 +622,7 @@ export default function KlinePage() {
               yAxisIndex: 1,
               data: indicatorData.dea,
               symbol: "none",
-              lineStyle: { width: 1.2, color: "#69c0ff" },
+              lineStyle: { width: 1.2, color: "#69c0ff" }, // 天蓝
             },
           );
         } else if (subIndicator === "KDJ") {
@@ -529,7 +634,7 @@ export default function KlinePage() {
               yAxisIndex: 1,
               data: indicatorData.k,
               symbol: "none",
-              lineStyle: { width: 1.2, color: "#ffd666" },
+              lineStyle: { width: 1.2, color: "#ffd666" }, // 金黄
             },
             {
               type: "line",
@@ -538,7 +643,7 @@ export default function KlinePage() {
               yAxisIndex: 1,
               data: indicatorData.d,
               symbol: "none",
-              lineStyle: { width: 1.2, color: "#69c0ff" },
+              lineStyle: { width: 1.2, color: "#69c0ff" }, // 天蓝
             },
             {
               type: "line",
@@ -547,7 +652,7 @@ export default function KlinePage() {
               yAxisIndex: 1,
               data: indicatorData.j,
               symbol: "none",
-              lineStyle: { width: 1.2, color: "#ff7875" },
+              lineStyle: { width: 1.2, color: "#ff7875" }, // 浅红
             },
           );
         } else if (subIndicator === "CUSTOM") {
@@ -566,6 +671,11 @@ export default function KlinePage() {
     };
   }, [bars, chartWidth, indicatorData, mainIndicator, subIndicator, customAligned, customSeriesTitle]);
 
+  /**
+   * 将 option 同步到 ECharts 图表实例
+   * 同时监听 datazoom 事件，记录用户拖拽后的可视区间
+   * 使用 ResizeObserver 让图表随容器宽度自动重绘
+   */
   useEffect(() => {
     const el = chartRef.current;
     if (!el) return;
@@ -593,6 +703,7 @@ export default function KlinePage() {
     };
   }, [option]);
 
+  // 组件卸载时销毁 ECharts 实例，释放内存
   useEffect(() => {
     return () => {
       chartInstance.current?.dispose();
@@ -600,6 +711,11 @@ export default function KlinePage() {
     };
   }, []);
 
+  /**
+   * 通过按钮控制图表缩放/平移
+   * @param deltaStart - dataZoom start 的变化量（百分比）
+   * @param deltaEnd   - dataZoom end 的变化量（百分比）
+   */
   const adjustDataZoom = (deltaStart: number, deltaEnd: number) => {
     const ins = chartInstance.current;
     if (!ins) return;
@@ -609,19 +725,10 @@ export default function KlinePage() {
     const curEnd = Number((dz as { end?: number } | undefined)?.end ?? 100);
     const nextStart = Math.max(0, Math.min(100, curStart + deltaStart));
     const nextEnd = Math.max(0, Math.min(100, curEnd + deltaEnd));
-    if (nextEnd - nextStart < 2) return;
-    ins.dispatchAction({
-      type: "dataZoom",
-      start: nextStart,
-      end: nextEnd,
-      dataZoomIndex: 0,
-    });
-    ins.dispatchAction({
-      type: "dataZoom",
-      start: nextStart,
-      end: nextEnd,
-      dataZoomIndex: 1,
-    });
+    if (nextEnd - nextStart < 2) return; // 防止缩放过头导致区间为空
+    // 同时更新主图和副图的 dataZoom（两个图需保持 X 轴同步）
+    ins.dispatchAction({ type: "dataZoom", start: nextStart, end: nextEnd, dataZoomIndex: 0 });
+    ins.dispatchAction({ type: "dataZoom", start: nextStart, end: nextEnd, dataZoomIndex: 1 });
   };
 
   return (
@@ -629,11 +736,16 @@ export default function KlinePage() {
       <Typography.Title level={4} style={{ margin: 0 }}>
         K 线
       </Typography.Title>
+
+      {/* 错误提示条：请求失败时显示 */}
       {error ? (
         <Alert type="error" message="请求失败" description={error} showIcon />
       ) : null}
+
       <Card>
+        {/* ── 控制栏：标的选择 + 周期 + 复权 + 指标参数 ──── */}
         <Space wrap style={{ marginBottom: 16 }}>
+          {/* 股票/指数搜索下拉，支持按代码或名称模糊搜索 */}
           <Select
             showSearch
             placeholder="选择标的"
@@ -643,6 +755,7 @@ export default function KlinePage() {
             onChange={setTsCode}
             optionFilterProp="label"
           />
+          {/* K 线周期：日/周/月/季/年 */}
           <Radio.Group
             optionType="button"
             buttonStyle="solid"
@@ -650,6 +763,7 @@ export default function KlinePage() {
             onChange={(e) => setInterval(e.target.value as Interval)}
             options={intervals}
           />
+          {/* 复权方式 */}
           <Radio.Group
             optionType="button"
             buttonStyle="solid"
@@ -661,6 +775,7 @@ export default function KlinePage() {
               { label: "后复权", value: "hfq" },
             ]}
           />
+          {/* 主图指标选择 */}
           <Select
             style={{ minWidth: 160 }}
             value={mainIndicator}
@@ -672,6 +787,7 @@ export default function KlinePage() {
               { value: "BOLL", label: "主图: BOLL" },
             ]}
           />
+          {/* 副图指标选择 */}
           <Select
             style={{ minWidth: 180 }}
             value={subIndicator}
@@ -683,6 +799,8 @@ export default function KlinePage() {
               { value: "CUSTOM", label: "副图: 自定义指标（日K）" },
             ]}
           />
+
+          {/* MA 参数：多选均线周期 */}
           {mainIndicator === "MA" ? (
             <Select
               mode="tags"
@@ -701,12 +819,16 @@ export default function KlinePage() {
               placeholder="MA参数，如 5,10,20"
             />
           ) : null}
+
+          {/* EXPMA 参数 */}
           {mainIndicator === "EXPMA" ? (
             <Space>
               <Typography.Text type="secondary">EXPMA参数</Typography.Text>
               <InputNumber min={2} max={250} size="small" value={expmaPeriod} onChange={(v) => setExpmaPeriod(Number(v) || 12)} />
             </Space>
           ) : null}
+
+          {/* BOLL 参数：N（周期）和 K（标准差倍数） */}
           {mainIndicator === "BOLL" ? (
             <Space>
               <Typography.Text type="secondary">BOLL N</Typography.Text>
@@ -715,6 +837,8 @@ export default function KlinePage() {
               <InputNumber min={1} max={5} step={0.5} size="small" value={bollK} onChange={(v) => setBollK(Number(v) || 2)} />
             </Space>
           ) : null}
+
+          {/* MACD 参数：快线/慢线/信号线周期 */}
           {subIndicator === "MACD" ? (
             <Space>
               <Typography.Text type="secondary">MACD</Typography.Text>
@@ -723,12 +847,16 @@ export default function KlinePage() {
               <InputNumber min={2} max={60} size="small" value={macdSignal} onChange={(v) => setMacdSignal(Number(v) || 9)} />
             </Space>
           ) : null}
+
+          {/* KDJ 参数 */}
           {subIndicator === "KDJ" ? (
             <Space>
               <Typography.Text type="secondary">KDJ N</Typography.Text>
               <InputNumber min={5} max={60} size="small" value={kdjN} onChange={(v) => setKdjN(Number(v) || 9)} />
             </Space>
           ) : null}
+
+          {/* 自定义副图参数：选择已保存的 DSL 指标和子线 */}
           {subIndicator === "CUSTOM" && interval === "1d" ? (
             <Space wrap>
               <Typography.Text type="secondary">自定义</Typography.Text>
@@ -756,22 +884,19 @@ export default function KlinePage() {
               />
             </Space>
           ) : null}
+
+          {/* 图表导航按钮：平移和缩放 */}
           <Space>
-            <Button size="small" onClick={() => adjustDataZoom(-5, -5)}>
-              左移
-            </Button>
-            <Button size="small" onClick={() => adjustDataZoom(5, 5)}>
-              右移
-            </Button>
-            <Button size="small" onClick={() => adjustDataZoom(3, -3)}>
-              放大
-            </Button>
-            <Button size="small" onClick={() => adjustDataZoom(-3, 3)}>
-              缩小
-            </Button>
+            <Button size="small" onClick={() => adjustDataZoom(-5, -5)}>左移</Button>
+            <Button size="small" onClick={() => adjustDataZoom(5, 5)}>右移</Button>
+            <Button size="small" onClick={() => adjustDataZoom(3, -3)}>放大</Button>
+            <Button size="small" onClick={() => adjustDataZoom(-3, 3)}>缩小</Button>
           </Space>
         </Space>
+
+        {/* ── 图表区域 ──────────────────────────────────────── */}
         <div style={{ position: "relative", minHeight: 480 }}>
+          {/* 加载中：显示居中旋转 spinner */}
           {loading ? (
             <Spin
               style={{
@@ -784,6 +909,7 @@ export default function KlinePage() {
               }}
             />
           ) : null}
+          {/* ECharts 绘图容器：宽 100%，高固定 520px */}
           <div ref={chartRef} style={{ width: "100%", height: 520 }} />
         </div>
       </Card>

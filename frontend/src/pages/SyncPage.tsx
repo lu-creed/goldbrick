@@ -1,3 +1,17 @@
+/**
+ * 数据同步页面
+ *
+ * 功能：管理从 Tushare 拉取股票数据的所有操作，包括：
+ * - 手动拉取（按所选股票、全市场、全指数）
+ * - 定时任务配置（设定 cron 表达式，每天自动同步）
+ * - 同步日志（查看历史运行记录、实时进度、暂停/继续/取消）
+ *
+ * 关键概念：
+ * - Tushare：提供 A 股数据的 API 平台，需要 token（积分 >= 320 才可用日线接口）
+ * - SyncJob：定时任务配置（唯一一条）
+ * - SyncRun：每次实际运行的记录（一次可能包含数千只股票）
+ * - 协作式取消：不会立即中断，而是在当前股票处理完后再停止
+ */
 import {
   Alert,
   Button,
@@ -41,17 +55,25 @@ import {
   resumeSyncRun,
   updateSyncJob,
 } from "../api/client";
+import { zebraRowClass } from "../constants/theme";
 
 export default function SyncPage() {
   const location = useLocation();
+  // job：定时任务配置（cron 表达式、是否启用等）
   const [job, setJob] = useState<SyncJob | null>(null);
+  // runs：最近 30 条同步运行记录
   const [runs, setRuns] = useState<SyncRun[]>([]);
+  // loading：是否正在加载定时任务配置（控制卡片加载状态）
   const [loading, setLoading] = useState(false);
+  // running：是否正在触发立即执行（防止重复点击）
   const [running, setRunning] = useState(false);
   const [form] = Form.useForm<{ cron_expr: string; enabled: boolean }>();
 
+  // symbolsLoading：是否正在加载股票列表
   const [symbolsLoading, setSymbolsLoading] = useState(false);
+  // allSymbols：本地元数据中的全部股票/指数（用于搜索下拉选择）
   const [allSymbols, setAllSymbols] = useState<SymbolRow[]>([]);
+  // tokenStatus：Tushare token 的配置状态
   const [tokenStatus, setTokenStatus] = useState<{
     hasRuntime: boolean;
     hasDb?: boolean;
@@ -62,13 +84,17 @@ export default function SyncPage() {
   const [tushareTokenDraft, setTushareTokenDraft] = useState("");
   const [tokenSaving, setTokenSaving] = useState(false);
 
+  // selectionMode：手动拉取时的选股模式（单选 or 多选）
   const [selectionMode, setSelectionMode] = useState<"single" | "multi">("multi");
+  // selectedCodes：已选中的股票/指数代码列表
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
+  // range：手动拉取的日期范围
   const [range, setRange] = useState<[Dayjs, Dayjs] | null>(null);
+  // fetching / fetchingAll / fetchingAllIndex：各个拉取按钮的 loading 状态
   const [fetching, setFetching] = useState(false);
   const [fetchingAll, setFetchingAll] = useState(false);
   const [fetchingAllIndex, setFetchingAllIndex] = useState(false);
-  /** 最近运行表里暂停/继续/取消按钮的 loading，避免连点 */
+  // runActionId：当前正在操作（暂停/继续/取消）的运行 ID（防止连点）
   const [runActionId, setRunActionId] = useState<number | null>(null);
 
   /** 顶栏「同步日志」入口带 #sync-runs 时滚动到运行记录表（对齐 PRD：同步日志） */
@@ -671,6 +697,7 @@ export default function SyncPage() {
           size="small"
           columns={columns}
           dataSource={runs}
+          rowClassName={zebraRowClass}
           pagination={{ pageSize: 10 }}
         />
       </Card>

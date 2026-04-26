@@ -22,3 +22,10 @@ build/
 # SQLite
 *.sqlite
 *.db
+
+# Claude Code internal files
+.claude/
+backend/.claude/
+backend/.agents/
+.run/
+skills-lock.json

@@ -143,6 +143,22 @@
 - 修复：个股列表表头排序第三次点击无响应（Ant Design 会传 `order: null`）；仅在 `onChange` 的 `action === 'sort'` 时更新排序并在取消态下对当前列反向切换；分页导致的 `onChange` 不再误用排序快照把页码锁回第 1 页。
 
 
+## 0.0.3-dev
+
+- **指标库内置新增 RSI**：相对强弱指数，N=6/12/24 三档，Wilder 指数平滑（alpha=1/N），首根用简单平均初始化；子线 `RSI6`、`RSI12`、`RSI24`。
+- **指标库内置新增 ATR**：真实波动幅度，N=14，Wilder 平滑均值；同时提供 `ATR14_PCT`（ATR14 占收盘价百分比，4 位小数）。
+- **指标库内置新增 WR**：威廉指标，N=10 和 N=6；公式 `(最高N - 收盘) / (最高N - 最低N) × (-100)`，取值 -100～0；子线 `WR10`、`WR6`。
+- **indicator_seed.py** 新增以上三条种子记录；`POST /api/indicators/seed` 可补种到已运行实例。
+- **indicator_compute.py** 完全重写：统一纯 float 列表结构，消除旧版的 OHLCV dict 转换；RSI/ATR/WR 与原 MA/EXPMA/BOLL/MACD/KDJ 并列计算并写入同一 `result` 字典。
+- **股票回测重建**（DSL 条件引擎，替代 0.0.2-dev 中下线的 legacy 引擎）：
+  - 后端 `POST /api/backtest/run`：基于保存的自定义 DSL 指标，在 `[start_date, end_date]` 对全市场逐日扫描；买入条件（op + threshold）+ 卖出条件（op + threshold）；等额分配仓位，最大持仓数可配。
+  - 绩效指标扩展（`BacktestRunOut`）：新增 `annualized_return`（252 日年化）、`sharpe_ratio`（日收益率标准差年化）、`calmar_ratio`（年化/|最大回撤|）、`profit_factor`（总盈/总亏）、`avg_win_pct`/`avg_loss_pct`/`max_win_pct`/`max_loss_pct`、`avg_holding_days`、`total_win`/`total_loss`。
+  - 前端 `BacktestPage` 完全重写：表单区（指标/子线/条件/资金/仓位）；结果区三栏绩效卡片（收益概览/风险控制/交易统计）；资金曲线面积图 + 回撤叠加；交易明细表（盈亏着色/持有中标签）。
+- **大V情绪仪表盘**新功能（`/sentiment`，数据看板下）：
+  - 后端 `GET /api/replay/sentiment-trend?days=N`（5～120，默认 60）：按交易日聚合涨跌家数、涨跌停家数，计算情绪分 `sentiment_score = clamp(50 + (up-down)/(total+1)×50 + limit_up/(total+1)×20, 0, 100)`；返回 `SentimentTrendOut`。
+  - 前端展示：时间范围四档切换（近1月/近3月/近半年/近半年+）；今日快报四张卡片（情绪分带标签着色、涨停/上涨/下跌家数）；三图：情绪分趋势（visualMap 冷暖渐变 + 参考阈值虚线 70/30）、涨停/跌停双线、涨跌家数堆叠柱状图；大V解读规则说明。
+
+
 ## 模板（后续版本直接复制）
 
 ### Vx.y.z

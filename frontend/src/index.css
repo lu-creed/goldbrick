@@ -1,3 +1,88 @@
+/* Tailwind CSS 基础引入（必须保留这三行） */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ── 全局暗色背景 ──────────────────────────────────────────── */
+
+/*
+  为什么要在这里设置背景色？
+  Ant Design 暗色主题会把组件本身变成深色，但浏览器页面的背景默认是白色。
+  如果不在这里设置，页面空白区域会显示白色，与暗色组件形成刺眼的对比。
+*/
+html,
+body {
+  background-color: #141414;
+  color: #d9d9d9; /* 默认文字颜色（浅灰，在暗色背景上清晰） */
+}
+
+/* ── 滚动条样式（暗色主题适配）──────────────────────────────── */
+
+/*
+  浏览器默认滚动条是白色/灰色，在暗色背景上很突兀。
+  这里把滚动条改成深色风格。
+  注意：这个样式只在 Chrome/Edge 等 Webkit 内核浏览器生效，
+  Firefox 需要额外配置（暂不处理）。
+*/
+::-webkit-scrollbar {
+  width: 6px;  /* 纵向滚动条宽度 */
+  height: 6px; /* 横向滚动条高度 */
+}
+
+::-webkit-scrollbar-track {
+  background: #1f1f1f; /* 滚动条轨道背景 */
+}
+
+::-webkit-scrollbar-thumb {
+  background: #444;        /* 滚动条滑块颜色 */
+  border-radius: 3px;      /* 滑块圆角 */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #666; /* 鼠标悬停时滑块变亮，提示可交互 */
+}
+
+/* ── 表格斑马纹 ────────────────────────────────────────────── */
+
+/*
+  斑马纹：奇偶行用不同背景色交替，方便眼睛跟踪每一行数据。
+  配合 constants/theme.ts 中的 zebraRowClass 函数使用。
+  .row-even 会加在偶数行上，背景略微亮一点。
+*/
+.ant-table-wrapper .row-even > td {
+  background-color: #1a1a2e !important; /* 偶数行：略带蓝调的深色 */
+}
+
+/* ── 路由切换动画 ────────────────────────────────────────────── */
+
+/*
+  页面切换时的淡入动画。
+  当 React Router 切换到新页面时，新页面会触发这个动画。
+  duration: 250ms，符合需求文档 ≤300ms 的要求。
+*/
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px); /* 从稍微下方淡入，有层次感 */
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 给所有页面内容容器加上动画 */
+.page-transition {
+  animation: fadeIn 0.25s ease-out;
+}
+
+/* ── ECharts 图表容器 ────────────────────────────────────────── */
+
+/*
+  ECharts 画出来的 canvas 元素，在暗色背景下需要确保宽高撑满容器。
+  这里防止图表容器因样式问题出现空白或溢出。
+*/
+.echarts-container {
+  width: 100%;
+  overflow: hidden;
+}

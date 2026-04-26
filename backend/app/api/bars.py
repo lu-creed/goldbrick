@@ -1,11 +1,22 @@
-"""K 线接口（路径前缀 /bars，完整为 /api/bars）。
+"""K 线接口（路径前缀 /api/bars/）。
 
-从数据库读出日线，按需复权，再聚合成周/月等周期。计算在 app/services/aggregation.py、adj.py。
-对应前端：K 线页调用 fetchBars。
+提供两个接口：
+
+1. GET /api/bars — 获取 K 线数据
+   - 查询单只股票（或指数）的 K 线序列
+   - 支持复权（none/qfq/hfq）和周期聚合（日/周/月/季/年）
+   - 日线从 bars_daily 读取原始数据，复权在内存中计算，周期聚合调用 aggregation.py
+   - 对应前端 K 线页的 fetchBars 调用
+
+2. GET /api/bars/custom-indicator-series — 自定义指标子线序列
+   - 在 K 线图的副图中叠加自定义指标
+   - 计算结果与当前选中的复权方式对齐（同一复权下的价格序列）
+   - 只支持日线（指标库的子线是按日计算的）
 """
 
+from __future__ import annotations
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -20,7 +31,7 @@ from app.services.user_indicator_compute import custom_indicator_daily_points
 router = APIRouter(prefix="/bars", tags=["bars"])
 
 
-@router.get("", response_model=list[BarPoint])
+@router.get("", response_model=List[BarPoint])
 def get_bars(
     ts_code: str = Query(...),
     interval: Interval = Query("1d"),
@@ -29,16 +40,33 @@ def get_bars(
     adj: AdjType = Query("none"),
     db: Session = Depends(get_db),
 ):
+    """获取 K 线数据。
+
+    Args:
+        ts_code: 股票代码，如 '600000.SH'（上交所）或 '000001.SZ'（深交所）。
+        interval: 周期：'1d'=日 / '1w'=周 / '1M'=月 / '1Q'=季 / '1y'=年。
+                  非日线时，日线会被聚合（OHLC取边值，成交量/额求和，时间取周期最后一天）。
+        start: 返回数据的起始日期（含）；None 则从最早有数据的日期开始。
+        end: 返回数据的结束日期（含）；None 则到最新日期。
+        adj: 复权类型：
+             'none'=不复权（原始价格）
+             'qfq'=前复权（以今天价格为基准，适合形态分析）
+             'hfq'=后复权（以最早价格为基准，适合收益率比较）
+
+    Returns:
+        BarPoint 列表，按日期升序，每个元素含 time/open/high/low/close/volume 等字段。
+        time 字段：日线为当日日期，周/月/季/年线为该周期最后一个交易日的日期。
+    """
     sym = db.query(Symbol).filter(Symbol.ts_code == ts_code.strip().upper()).one_or_none()
     if not sym:
         raise HTTPException(status_code=404, detail="unknown ts_code")
 
-    # 加载复权因子（adj != none 时才查，减少无用 IO）
+    # 只有需要复权时才加载复权因子（无复权时跳过，节省数据库 I/O）
     adj_map: dict[date, float] = {}
     latest_factor = 1.0
     if adj != "none":
         adj_map = build_adj_map(db, sym.id)
-        latest_factor = get_latest_factor(adj_map)
+        latest_factor = get_latest_factor(adj_map)  # 前复权基准：最新日期的因子值
 
     q = db.query(BarDaily).filter(BarDaily.symbol_id == sym.id).order_by(BarDaily.trade_date.asc())
     if start:
@@ -47,10 +75,11 @@ def get_bars(
         q = q.filter(BarDaily.trade_date <= end)
     rows_db = q.all()
 
+    # 将数据库 ORM 对象转换为 DailyRow 内部对象，同时应用复权换算
     rows = [
         DailyRow(
             trade_date=b.trade_date,
-            # 仅对价格字段做复权，成交量/金额/换手率不变
+            # 只对价格字段（OHLC）做复权，成交量/金额/换手率不受分红影响，保持原始值
             open=apply_adj(float(b.open), b.trade_date, adj, adj_map, latest_factor),
             high=apply_adj(float(b.high), b.trade_date, adj, adj_map, latest_factor),
             low=apply_adj(float(b.low), b.trade_date, adj, adj_map, latest_factor),
@@ -65,6 +94,7 @@ def get_bars(
         )
         for b in rows_db
     ]
+    # aggregate_bars 处理周期聚合：日线 interval='1d' 时直接返回，否则按自然日历分组压缩
     return aggregate_bars(rows, interval)
 
 
@@ -78,7 +108,18 @@ def get_custom_indicator_series(
     end: Optional[date] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """自定义指标子线日线序列（与当前 K 线选择的复权方式对齐；前端请在日 K 下叠加）。"""
+    """获取自定义指标的某条子线的日线序列，用于 K 线图副图叠加展示。
+
+    Args:
+        ts_code: 股票代码。
+        user_indicator_id: 要计算的自定义指标 ID（来自 /api/indicators/custom）。
+        sub_key: 子线的 key（如 'line1'、'signal'），必须是该指标已定义的子线。
+        adj: 复权类型（与当前 K 线主图的复权方式保持一致，否则价格基准不同会错位）。
+        start/end: 返回数据的日期范围（None 则返回全量）。
+
+    Returns:
+        CustomIndicatorSeriesOut，含 ts_code/display_name/points（{time, value}列表）。
+    """
     raw = custom_indicator_daily_points(
         db,
         ts_code=ts_code,

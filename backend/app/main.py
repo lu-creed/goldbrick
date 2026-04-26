@@ -23,6 +23,8 @@ from app.api.sync import router as sync_router
 from app.api.replay import router as replay_router
 from app.api.dashboard import router as dashboard_router
 from app.api.screening import router as screening_router
+from app.api.backtest import router as backtest_router
+from app.api.dav import router as dav_router
 from app.database import (
     Base,
     SessionLocal,
@@ -44,25 +46,43 @@ log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """应用生命周期钩子：FastAPI 启动时执行初始化，关闭时执行清理。
+
+    启动阶段（yield 之前）：
+    1. create_all：根据 models.py 里的类定义建表（已存在则跳过）
+    2. ensure_* 系列：为老数据库补缺失的列（SQLite 迁移兼容）
+    3. ensure_default_sync_job：确保 sync_jobs 表里有一条默认配置记录
+    4. start_scheduler：启动 APScheduler 定时器（按配置的 cron 自动同步）
+
+    关闭阶段（yield 之后）：
+    5. shutdown_scheduler：停止定时器，不等待正在运行的任务
+    """
+    # 1. 建表（ORM 根据 models.py 定义自动创建所有表，已存在的表不会重建）
     Base.metadata.create_all(bind=engine)
+    # 2. SQLite 迁移兼容：补加新版本引入的列（不会影响已有数据）
     ensure_sqlite_instrument_meta_columns()
     ensure_symbols_drop_legacy_enabled_column()
     ensure_sync_runs_control_columns()
     ensure_user_indicators_definition_json_column()
+    # 3. 确保 sync_jobs 表里至少有一条默认定时任务记录
     db = SessionLocal()
     try:
         ensure_default_sync_job(db)
     finally:
         db.close()
+    # 4. 启动定时器（根据数据库里的 cron_expr 配置触发定时同步）
     start_scheduler()
     log.info("app started, scheduler on")
-    yield
+    yield  # 这里应用正常运行，处理请求
+    # 5. 关闭阶段：停止定时器
     shutdown_scheduler()
     log.info("app shutdown")
 
 
 app = FastAPI(title="GoldBrick API", version="0.0.2-dev", lifespan=lifespan)
 
+# CORS（跨域资源共享）：允许前端（本地 5173 端口）向后端发请求
+# 本地开发时前端跑在 localhost:5173，后端跑在 localhost:8000，端口不同需要开放 CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -74,18 +94,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(symbols_router, prefix="/api")  # 股票池：本地关注的代码
-app.include_router(bars_router, prefix="/api")  # K 线：按股票+周期取行情
-app.include_router(tushare_router, prefix="/api")  # 外部数据源：如全 A 列表供页面勾选
-app.include_router(admin_tushare_router, prefix="/api")  # 管理：Tushare token 状态与保存
-app.include_router(sync_router, prefix="/api")  # 同步与数据后台、按股票拉历史
-# 自定义指标必须先于内置指标注册：否则 GET /indicators/custom 会被 /indicators/{id} 当成路径参数 custom 再转 int 失败，返回 422。
+# 注册各业务模块的路由（按功能分文件，统一挂到 /api 前缀下）
+app.include_router(symbols_router, prefix="/api")          # 股票池：本地关注的代码
+app.include_router(bars_router, prefix="/api")             # K 线：按股票+周期取行情
+app.include_router(tushare_router, prefix="/api")          # 外部数据源：如全 A 列表供页面勾选
+app.include_router(admin_tushare_router, prefix="/api")    # 管理：Tushare token 状态与保存
+app.include_router(sync_router, prefix="/api")             # 同步与数据后台、按股票拉历史
+
+# 自定义指标必须先于内置指标注册：否则 GET /indicators/custom 会被 /indicators/{id}
+# 当成路径参数 custom 再尝试转 int 失败，返回 422 错误。
 app.include_router(custom_indicators_router, prefix="/api")  # 用户自定义指标
-app.include_router(indicators_router, prefix="/api")  # 指标库：内置列表与详情
-app.include_router(replay_router, prefix="/api")  # 股票复盘：单日聚合
-app.include_router(dashboard_router, prefix="/api")  # 数据看板：个股列表（行情维）
-app.include_router(screening_router, prefix="/api")  # 条件选股（自定义指标）
+app.include_router(indicators_router, prefix="/api")          # 指标库：内置列表与详情
+app.include_router(replay_router, prefix="/api")              # 股票复盘：单日聚合
+app.include_router(dashboard_router, prefix="/api")           # 数据看板：个股列表（行情维）
+app.include_router(screening_router, prefix="/api")           # 条件选股（自定义指标）
+app.include_router(backtest_router, prefix="/api")             # 全市场条件选股回测
+app.include_router(dav_router, prefix="/api")                  # 大V看板（ABCD分类 + 预期股息率）
+
 
 @app.get("/api/health")
 def health():
+    """健康检查接口：返回 {"status": "ok"} 表示服务正常运行。"""
     return {"status": "ok"}

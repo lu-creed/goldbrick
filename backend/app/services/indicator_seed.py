@@ -5,8 +5,6 @@ from app.models import Indicator, IndicatorParam, IndicatorSubIndicator
 
 # 格式：(name, display_name, description, params_list, sub_list)
 # params_list: [(name, description, default_value), ...]
-# sub_list: [(name, description), ...]
-# 格式：(name, display_name, desc, params_list, sub_list)
 # sub_list 元素：(name, description, can_be_price)
 # can_be_price=True 的子指标才能在回测中作为买入/卖出价格基准
 _SEED = [
@@ -70,6 +68,34 @@ _SEED = [
         [
             ("EXPMA12", "12日指数移动平均线", False),
             ("EXPMA26", "26日指数移动平均线", False),
+        ],
+    ),
+    (
+        "RSI", "相对强弱指数",
+        "衡量价格涨跌幅度的动量指标，取值0~100。大于70通常被视为超买，小于30被视为超卖。参数已锁定：N=6/12/24。",
+        [("N", "RSI计算周期（已锁定）", "6/12/24")],
+        [
+            ("RSI6",  "6日相对强弱指数，灵敏度最高", False),
+            ("RSI12", "12日相对强弱指数，中等灵敏度", False),
+            ("RSI24", "24日相对强弱指数，趋势参考", False),
+        ],
+    ),
+    (
+        "ATR", "真实波动幅度",
+        "衡量价格波动性的指标，综合考虑当日高低价差和与前收盘的跳空。常用于设置止损位。参数已锁定：N=14。",
+        [("N", "均值平滑周期（已锁定）", "14")],
+        [
+            ("ATR14", "14日平均真实波幅（绝对值，与价格同单位）", False),
+            ("ATR14_PCT", "14日ATR占收盘价的百分比，便于跨标的比较", False),
+        ],
+    ),
+    (
+        "WR", "威廉指标",
+        "衡量收盘价在N日价格区间中所处位置的超买超卖指标，取值-100~0。-20以上为超买，-80以下为超卖。参数已锁定：N=10/6。",
+        [("N", "计算周期（已锁定）", "10/6")],
+        [
+            ("WR10", "10日威廉指标", False),
+            ("WR6",  "6日威廉指标（更灵敏）", False),
         ],
     ),
     (

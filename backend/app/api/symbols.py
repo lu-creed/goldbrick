@@ -4,6 +4,8 @@
 数据表：symbols。
 """
 
+from __future__ import annotations
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -15,7 +17,7 @@ from app.services.ingestion import ensure_symbols_for_stock_meta
 router = APIRouter(prefix="/symbols", tags=["symbols"])
 
 
-@router.get("", response_model=list[SymbolOut])
+@router.get("", response_model=List[SymbolOut])
 def list_symbols(db: Session = Depends(get_db)):
     # 曾只同步到 instrument_meta 未写 symbols，导致下拉全空；读列表时按需补齐（无缺口则一次反查即返回）
     ensure_symbols_for_stock_meta(db)
