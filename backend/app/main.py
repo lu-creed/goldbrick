@@ -36,6 +36,8 @@ from app.database import (
 )
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.services.sync_runner import ensure_default_sync_job
+from app.services.indicator_seed import seed_indicators
+from app.services.user_indicator_seed import ensure_default_user_indicators
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,10 +54,12 @@ async def lifespan(app: FastAPI):
     1. create_all：根据 models.py 里的类定义建表（已存在则跳过）
     2. ensure_* 系列：为老数据库补缺失的列（SQLite 迁移兼容）
     3. ensure_default_sync_job：确保 sync_jobs 表里有一条默认配置记录
-    4. start_scheduler：启动 APScheduler 定时器（按配置的 cron 自动同步）
+    4. seed_indicators：写入内置指标种子（按名称查重，已有则跳过）
+    5. ensure_default_user_indicators：写入预置策略模板对应的自定义指标
+    6. start_scheduler：启动 APScheduler 定时器（按配置的 cron 自动同步）
 
     关闭阶段（yield 之后）：
-    5. shutdown_scheduler：停止定时器，不等待正在运行的任务
+    7. shutdown_scheduler：停止定时器，不等待正在运行的任务
     """
     # 1. 建表（ORM 根据 models.py 定义自动创建所有表，已存在的表不会重建）
     Base.metadata.create_all(bind=engine)
@@ -68,9 +72,13 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         ensure_default_sync_job(db)
+        # 4. 写入内置指标种子（按名称查重，已存在则跳过；新版本新增的指标自动补入）
+        seed_indicators(db)
+        # 5. 写入预置自定义指标（策略模板对应的指标，必须在 seed_indicators 之后执行）
+        ensure_default_user_indicators(db)
     finally:
         db.close()
-    # 4. 启动定时器（根据数据库里的 cron_expr 配置触发定时同步）
+    # 6. 启动定时器（根据数据库里的 cron_expr 配置触发定时同步）
     start_scheduler()
     log.info("app started, scheduler on")
     yield  # 这里应用正常运行，处理请求

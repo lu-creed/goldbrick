@@ -73,7 +73,13 @@ def _trading_dates_in_range(
         ORDER BY trade_date ASC
     """)
     rows = db.execute(sql, {"start": start, "end": end}).fetchall()
-    return [r[0] for r in rows]
+    result: list[date] = []
+    for r in rows:
+        d = r[0]
+        if isinstance(d, str):
+            d = date.fromisoformat(d)
+        result.append(d)
+    return result
 
 
 def _close_on_date(bars: list[BarDaily], d: date) -> Optional[float]:
@@ -295,6 +301,7 @@ def run_backtest(
             cash += sell_value
             pnl = sell_value - position_capital
             pnl_pct = pnl / position_capital * 100.0
+            sell_sig_data = all_signals.get(ts_code, {}).get(d)
             closed_trades.append({
                 "ts_code": ts_code,
                 "name": ts_to_name.get(ts_code),
@@ -305,6 +312,8 @@ def run_backtest(
                 "sell_price": round(close_price, 4),
                 "pnl": round(pnl, 2),
                 "pnl_pct": round(pnl_pct, 3),
+                "buy_trigger_val": pos.get("buy_trigger_val"),
+                "sell_trigger_val": round(sell_sig_data[2], 4) if sell_sig_data else None,
             })
 
         # -- 2. 买入：在仓位有空槽时建仓 --
@@ -339,6 +348,7 @@ def run_backtest(
                     "buy_date": d.isoformat(),
                     "buy_price": round(close_price, 4),
                     "shares": shares,
+                    "buy_trigger_val": round(_val, 4),
                 }
 
         # -- 3. 计算当日总权益 --
@@ -380,6 +390,8 @@ def run_backtest(
             "sell_price": round(close_price, 4),
             "pnl": round(pnl, 2),
             "pnl_pct": round(pnl_pct, 3),
+            "buy_trigger_val": pos.get("buy_trigger_val"),
+            "sell_trigger_val": None,
         })
 
     # ---- 基础绩效指标 ----

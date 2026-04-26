@@ -560,6 +560,8 @@ class BacktestTradeRow(BaseModel):
     sell_price: Optional[float] = None
     pnl: Optional[float] = None
     pnl_pct: Optional[float] = None
+    buy_trigger_val: Optional[float] = None
+    sell_trigger_val: Optional[float] = None
 
 
 class BacktestEquityPoint(BaseModel):
@@ -619,6 +621,31 @@ class BacktestRunOut(BaseModel):
     avg_holding_days: Optional[float] = None
     total_win: int = 0
     total_loss: int = 0
+
+
+# ---- 回测交易K线详情 ----
+
+class TradeChartBarPoint(BaseModel):
+    """K 线蜡烛图中的单根 K 线（精简版，仅包含绘图必需字段）。"""
+    time: str
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class TradeChartIndicatorPoint(BaseModel):
+    """指标副图中的单个数据点。"""
+    time: str
+    value: Optional[float] = None
+
+
+class TradeChartOut(BaseModel):
+    """回测交易K线详情：K线 + 指标子线，供Drawer中的验证图使用。"""
+    bars: list[TradeChartBarPoint]
+    indicator: list[TradeChartIndicatorPoint]
+    sub_key: str
+    sub_display_name: str
 
 
 # ---- 情绪趋势（大V视角仪表盘）----

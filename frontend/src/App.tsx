@@ -22,6 +22,7 @@ import SentimentPage from "./pages/SentimentPage";
 import StockListPage from "./pages/StockListPage";
 import SyncPage from "./pages/SyncPage";
 import BacktestPage from "./pages/BacktestPage";
+import DavPage from "./pages/DavPage";
 
 const { Header, Content, Footer } = Layout;
 const { Text } = Typography;
@@ -46,6 +47,7 @@ function menuSelectedKeys(loc: { pathname: string; hash: string }): string[] {
   if (pathname === "/sentiment") return ["m-sentiment"];
   if (pathname === "/indicators") return ["m-indicators"];
   if (pathname === "/screening") return ["m-screening"];
+  if (pathname === "/dav") return ["m-dav"];
   if (pathname === "/backtest/history") return ["m-backtest-records"];
   if (pathname === "/backtest") return ["m-backtest-start"];
   if (pathname === "/") return ["m-kline"];
@@ -115,7 +117,7 @@ export default function App() {
               label: "数据看板",
               children: [
                 { key: "m-replay",    label: <Link to="/replay">股票复盘</Link> },
-                { key: "m-sentiment", label: <Link to="/sentiment">大V情绪仪表盘</Link> },
+                { key: "m-dav",       label: <Link to="/dav">大V看板</Link> },
                 { key: "m-stock-list", label: <Link to="/stock-list">个股列表</Link> },
                 { key: "m-kline",     label: <Link to="/">K 线</Link> },
               ],
@@ -161,6 +163,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<KlinePage />} />
             <Route path="/replay" element={<ReplayPage />} />
+            <Route path="/dav" element={<DavPage />} />
             <Route path="/stock-list" element={<StockListPage />} />
             {/* 旧路径重定向，防止书签失效 */}
             <Route path="/buy" element={<Navigate to="/" replace />} />

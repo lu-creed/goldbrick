@@ -18,12 +18,16 @@ import {
   Col,
   DatePicker,
   Divider,
+  Drawer,
   Form,
+  Input,
   InputNumber,
+  Modal,
   Row,
   Select,
   Skeleton,
   Space,
+  Spin,
   Statistic,
   Table,
   Tag,
@@ -32,6 +36,7 @@ import {
   message,
 } from "antd";
 import {
+  AppstoreOutlined,
   InfoCircleOutlined,
   LineChartOutlined,
   RiseOutlined,
@@ -44,10 +49,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   fetchCustomIndicators,
+  fetchTradeChart,
   getApiErrorMessage,
   runBacktest,
   type BacktestRunOut,
   type BacktestTradeRow,
+  type TradeChartOut,
   type UserIndicatorOut,
 } from "../api/client";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
@@ -63,6 +70,10 @@ const compareOptions = [
   { value: "eq",  label: "等于 =" },
   { value: "ne",  label: "不等于 ≠" },
 ];
+
+const OP_SYMBOL: Record<string, string> = {
+  gt: ">", gte: "≥", lt: "<", le: "≤", eq: "=", ne: "≠",
+};
 
 /** 从 DSL 指标定义中提取可参与选股/回测的子线选项 */
 function screeningSubKeys(def: Record<string, unknown> | null | undefined) {
@@ -129,6 +140,495 @@ function MetricCard({
   );
 }
 
+// ── 策略模板 ──────────────────────────────────────────────────────────────────
+
+interface StrategyTemplate {
+  key: string;
+  name: string;
+  badge: string;
+  desc: string;
+  indicatorCode: string;   // 对应预置指标的 code（tpl_*）
+  subKey: string;          // 对应预置指标的子线 key
+  buy_op: string;
+  buy_threshold: number;
+  sell_op: string;
+  sell_threshold: number;
+  max_positions: number;
+}
+
+const STRATEGY_TEMPLATES: StrategyTemplate[] = [
+  {
+    key: "rsi_oversold",
+    name: "RSI 超卖反弹",
+    badge: "震荡适用",
+    desc: "RSI12 跌破 30（超卖区）时买入，升回 70 以上（超买区）时卖出。适合宽幅震荡行情，追求高胜率的短线交易。",
+    indicatorCode: "tpl_rsi",
+    subKey: "rsi12",
+    buy_op: "lt",  buy_threshold: 30,
+    sell_op: "gt", sell_threshold: 70,
+    max_positions: 3,
+  },
+  {
+    key: "ma_cross",
+    name: "MA 均线金叉",
+    badge: "趋势跟随",
+    desc: "MA5-MA20 差值由负转正（金叉）时买入，由正转负（死叉）时卖出。适合趋势行情，持仓周期较长。",
+    indicatorCode: "tpl_ma_cross",
+    subKey: "diff",
+    buy_op: "gt",  buy_threshold: 0,
+    sell_op: "lt", sell_threshold: 0,
+    max_positions: 5,
+  },
+  {
+    key: "macd_signal",
+    name: "MACD 金叉",
+    badge: "动量信号",
+    desc: "MACD 柱状线由负转正（多头动能）时买入，由正转负时卖出。信号相对 MA 滞后，适合中线持仓。",
+    indicatorCode: "tpl_macd_bar",
+    subKey: "bar",
+    buy_op: "gt",  buy_threshold: 0,
+    sell_op: "lt", sell_threshold: 0,
+    max_positions: 3,
+  },
+  {
+    key: "boll_rebound",
+    name: "布林下轨反弹",
+    badge: "均值回归",
+    desc: "价格在布林带中的位置（0=下轨，1=上轨）低于 0.1 时买入（触及下轨超卖），高于 0.5 时卖出（收复中轨）。",
+    indicatorCode: "tpl_boll_pos",
+    subKey: "pos",
+    buy_op: "lt",  buy_threshold: 0.1,
+    sell_op: "gt", sell_threshold: 0.5,
+    max_positions: 5,
+  },
+  {
+    key: "kdj_oversold",
+    name: "KDJ 超卖",
+    badge: "短线反弹",
+    desc: "KDJ 的 J 值低于 20（深度超卖）时买入，高于 80（超买）时卖出。J 值波动剧烈，信号频繁，适合短线。",
+    indicatorCode: "tpl_kdj_j",
+    subKey: "j",
+    buy_op: "lt",  buy_threshold: 20,
+    sell_op: "gt", sell_threshold: 80,
+    max_positions: 3,
+  },
+  {
+    key: "cci_oversold",
+    name: "CCI 超卖反弹",
+    badge: "震荡适用",
+    desc: "CCI14 低于 -100（极端超卖）时买入，高于 +100（超买）时卖出。CCI 对急跌反弹捕捉灵敏，适合震荡市。",
+    indicatorCode: "tpl_cci",
+    subKey: "cci14",
+    buy_op: "lt",  buy_threshold: -100,
+    sell_op: "gt", sell_threshold: 100,
+    max_positions: 3,
+  },
+  {
+    key: "bias_oversold",
+    name: "BIAS 乖离回归",
+    badge: "均值回归",
+    desc: "BIAS12 低于 -8%（价格明显低于12日均线）时买入，高于 +5% 时卖出。适合均值回归策略，规避单边下跌行情。",
+    indicatorCode: "tpl_bias",
+    subKey: "bias12",
+    buy_op: "lt",  buy_threshold: -8,
+    sell_op: "gt", sell_threshold: 5,
+    max_positions: 5,
+  },
+  {
+    key: "roc_momentum",
+    name: "ROC 动量突破",
+    badge: "动量信号",
+    desc: "ROC12 高于 +5%（强势上涨动量）时买入顺势，低于 -5% 时止损离场。适合趋势明显的单边行情。",
+    indicatorCode: "tpl_roc",
+    subKey: "roc12",
+    buy_op: "gt",  buy_threshold: 5,
+    sell_op: "lt", sell_threshold: -5,
+    max_positions: 3,
+  },
+  {
+    key: "vol_ratio",
+    name: "量比放量突破",
+    badge: "量价配合",
+    desc: "成交量/VMA20 量比高于 2（当日放量超过均量2倍）时买入，低于 0.5（明显缩量）时卖出。",
+    indicatorCode: "tpl_vol_ratio",
+    subKey: "vol_ratio",
+    buy_op: "gt",  buy_threshold: 2,
+    sell_op: "lt", sell_threshold: 0.5,
+    max_positions: 5,
+  },
+  {
+    key: "trix_cross",
+    name: "TRIX 零轴金叉",
+    badge: "趋势跟随",
+    desc: "TRIX12 从下方上穿 0 轴时买入（趋势转多），从上方下穿 0 轴时卖出。TRIX 经过三次平滑，可过滤大量噪音。",
+    indicatorCode: "tpl_trix",
+    subKey: "trix12",
+    buy_op: "gt",  buy_threshold: 0,
+    sell_op: "lt", sell_threshold: 0,
+    max_positions: 5,
+  },
+];
+
+const BADGE_COLOR: Record<string, string> = {
+  "震荡适用": "purple",
+  "趋势跟随": "blue",
+  "动量信号": "cyan",
+  "均值回归": "geekblue",
+  "短线反弹": "orange",
+  "量价配合": "green",
+};
+
+interface TemplatePanelProps {
+  open: boolean;
+  onClose: () => void;
+  onApply: (tpl: StrategyTemplate) => void;
+}
+
+function TemplatePanel({ open, onClose, onApply }: TemplatePanelProps) {
+  return (
+    <Modal
+      title="策略模板"
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      width={700}
+    >
+      <div style={{ marginBottom: 12 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          点击「使用模板」后，对应指标和买卖条件会自动填入表单，直接点「开始回测」即可。
+        </Typography.Text>
+      </div>
+      <Space direction="vertical" style={{ width: "100%" }} size={10}>
+        {STRATEGY_TEMPLATES.map((tpl) => (
+          <Card
+            key={tpl.key}
+            size="small"
+            styles={{ body: { padding: "10px 14px" } }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div style={{ flex: 1 }}>
+                <Space size={8} style={{ marginBottom: 4 }}>
+                  <Typography.Text strong>{tpl.name}</Typography.Text>
+                  <Tag color={BADGE_COLOR[tpl.badge] ?? "default"} style={{ fontSize: 11 }}>{tpl.badge}</Tag>
+                </Space>
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: "0 0 6px" }}>
+                  {tpl.desc}
+                </Typography.Paragraph>
+                <Space size={16}>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    买入：子线 {tpl.buy_op === "lt" ? "<" : tpl.buy_op === "gt" ? ">" : tpl.buy_op === "lte" ? "≤" : "≥"} {tpl.buy_threshold}
+                  </Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    卖出：子线 {tpl.sell_op === "lt" ? "<" : tpl.sell_op === "gt" ? ">" : tpl.sell_op === "lte" ? "≤" : "≥"} {tpl.sell_threshold}
+                  </Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    最大持仓：{tpl.max_positions} 只
+                  </Typography.Text>
+                </Space>
+              </div>
+              <Button
+                type="primary"
+                size="small"
+                style={{ marginLeft: 16, flexShrink: 0 }}
+                onClick={() => { onApply(tpl); onClose(); }}
+              >
+                使用模板
+              </Button>
+            </div>
+          </Card>
+        ))}
+      </Space>
+    </Modal>
+  );
+}
+
+// ── 交易验证 Drawer ───────────────────────────────────────────────────────────
+
+interface TradeDetailDrawerProps {
+  open: boolean;
+  onClose: () => void;
+  onAfterClose?: () => void;
+  trade: BacktestTradeRow | null;
+  params: {
+    buy_op: string; buy_threshold: number;
+    sell_op: string; sell_threshold: number;
+    user_indicator_id: number; sub_key: string;
+  } | null;
+  startDate: string;
+  endDate: string;
+}
+
+function TradeDetailDrawer({ open, onClose, onAfterClose, trade, params, startDate, endDate }: TradeDetailDrawerProps) {
+  const chartRef = useRef<HTMLDivElement>(null);
+  const chartInst = useRef<echarts.ECharts | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [chartData, setChartData] = useState<TradeChartOut | null>(null);
+
+  // 每次打开或切换 trade 时重新拉数据
+  useEffect(() => {
+    if (!open || !trade || !params) { setChartData(null); return; }
+    setLoading(true);
+    setChartData(null);
+    fetchTradeChart({
+      ts_code: trade.ts_code,
+      user_indicator_id: params.user_indicator_id,
+      sub_key: params.sub_key,
+      start_date: startDate,
+      end_date: endDate,
+    })
+      .then(setChartData)
+      .catch(() => message.error("获取验证图数据失败"))
+      .finally(() => setLoading(false));
+  }, [open, trade, params, startDate, endDate]);
+
+  // 数据到位后渲染 ECharts
+  useEffect(() => {
+    if (!chartData || !chartRef.current || !trade || !params) return;
+    if (!chartInst.current) {
+      chartInst.current = echarts.init(chartRef.current);
+    }
+    const chart = chartInst.current;
+
+    const dates  = chartData.bars.map((b) => b.time);
+    // ECharts candlestick 格式：[open, close, low, high]
+    const ohlc   = chartData.bars.map((b) => [b.open, b.close, b.low, b.high]);
+    const indVals = chartData.indicator.map((p) => p.value ?? null);
+
+    // 买卖标记点（定位在当日最低/最高价外侧）
+    const barByDate = new Map(chartData.bars.map((b) => [b.time, b]));
+    const markerData: object[] = [];
+    const buyBar  = barByDate.get(trade.buy_date);
+    if (buyBar) {
+      markerData.push({
+        value: [trade.buy_date, +(buyBar.low * 0.985).toFixed(3)],
+        itemStyle: { color: "#52c41a" },
+        symbol: "triangle",
+        symbolSize: 14,
+        label: { show: true, formatter: "买", position: "bottom", color: "#52c41a", fontSize: 11, fontWeight: 700 },
+      });
+    }
+    if (trade.sell_date) {
+      const sellBar = barByDate.get(trade.sell_date);
+      if (sellBar) {
+        markerData.push({
+          value: [trade.sell_date, +(sellBar.high * 1.015).toFixed(3)],
+          itemStyle: { color: "#f5222d" },
+          symbol: "triangle",
+          symbolSize: 14,
+          symbolRotate: 180,
+          label: { show: true, formatter: "卖", position: "top", color: "#f5222d", fontSize: 11, fontWeight: 700 },
+        });
+      }
+    }
+
+    chart.setOption({
+      ...ECHARTS_BASE_OPTION,
+      backgroundColor: "transparent",
+      animation: false,
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "cross", link: [{ xAxisIndex: "all" }] },
+        backgroundColor: "#1f1f1f",
+        borderColor: "#333",
+        textStyle: { color: "#e0e0e0", fontSize: 12 },
+      },
+      axisPointer: { link: [{ xAxisIndex: "all" }] },
+      grid: [
+        { left: 60, right: 16, top: 16, height: "52%" },
+        { left: 60, right: 16, top: "72%", bottom: 40 },
+      ],
+      xAxis: [
+        {
+          type: "category", data: dates, gridIndex: 0,
+          axisLabel: { show: false }, axisLine: { lineStyle: { color: "#333" } }, axisTick: { show: false },
+        },
+        {
+          type: "category", data: dates, gridIndex: 1,
+          axisLabel: { color: "#8c8c8c", fontSize: 10 }, axisLine: { lineStyle: { color: "#333" } },
+        },
+      ],
+      yAxis: [
+        {
+          scale: true, gridIndex: 0,
+          axisLabel: { color: "#8c8c8c", fontSize: 10 },
+          splitLine: { lineStyle: { color: "#222" } },
+        },
+        {
+          gridIndex: 1,
+          axisLabel: { color: "#8c8c8c", fontSize: 10 },
+          splitLine: { lineStyle: { color: "#222" } },
+        },
+      ],
+      dataZoom: [
+        { type: "inside",  xAxisIndex: [0, 1], start: 0, end: 100 },
+        { type: "slider",  xAxisIndex: [0, 1], bottom: 4, height: 18,
+          textStyle: { color: "#8c8c8c", fontSize: 10 }, handleStyle: { color: "#555" }, fillerColor: "rgba(80,80,80,0.2)" },
+      ],
+      series: [
+        {
+          name: "K线",
+          type: "candlestick",
+          xAxisIndex: 0, yAxisIndex: 0,
+          data: ohlc,
+          itemStyle: {
+            color: RISE_COLOR, color0: FALL_COLOR,
+            borderColor: RISE_COLOR, borderColor0: FALL_COLOR,
+          },
+        },
+        {
+          name: "买卖点",
+          type: "scatter",
+          xAxisIndex: 0, yAxisIndex: 0,
+          data: markerData,
+          z: 10,
+          symbolSize: 14,
+          tooltip: { show: false },
+        },
+        {
+          name: chartData.sub_display_name,
+          type: "line",
+          xAxisIndex: 1, yAxisIndex: 1,
+          data: indVals,
+          lineStyle: { color: "#4096ff", width: 1.5 },
+          symbol: "none",
+          connectNulls: false,
+          markLine: {
+            symbol: ["none", "none"],
+            silent: true,
+            data: [
+              {
+                name: `买入 ${OP_SYMBOL[params.buy_op] ?? params.buy_op}${params.buy_threshold}`,
+                yAxis: params.buy_threshold,
+                lineStyle: { color: "#52c41a", type: "dashed", width: 1.5 },
+                label: { formatter: `买 ${OP_SYMBOL[params.buy_op] ?? params.buy_op}${params.buy_threshold}`, color: "#52c41a", fontSize: 10 },
+              },
+              {
+                name: `卖出 ${OP_SYMBOL[params.sell_op] ?? params.sell_op}${params.sell_threshold}`,
+                yAxis: params.sell_threshold,
+                lineStyle: { color: "#f5222d", type: "dashed", width: 1.5 },
+                label: { formatter: `卖 ${OP_SYMBOL[params.sell_op] ?? params.sell_op}${params.sell_threshold}`, color: "#f5222d", fontSize: 10 },
+              },
+            ],
+          },
+        },
+      ],
+    }, true);
+
+    const resize = () => chart.resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, [chartData, trade, params]);
+
+  // Drawer 关闭时销毁图表实例
+  useEffect(() => {
+    if (!open && chartInst.current) {
+      chartInst.current.dispose();
+      chartInst.current = null;
+    }
+  }, [open]);
+
+  const subName = chartData?.sub_display_name ?? params?.sub_key ?? "";
+
+  return (
+    <Drawer
+      title={
+        trade ? (
+          <Space>
+            <span>{trade.ts_code}</span>
+            {trade.name && <Text type="secondary" style={{ fontSize: 13 }}>{trade.name}</Text>}
+            <Tag color={trade.pnl_pct != null && trade.pnl_pct > 0 ? "success" : "error"}>
+              {fmtPct(trade.pnl_pct)}
+            </Tag>
+          </Space>
+        ) : "交易验证"
+      }
+      open={open}
+      onClose={onClose}
+      afterOpenChange={(vis) => { if (!vis) onAfterClose?.(); }}
+      width={860}
+      styles={{ body: { padding: "12px 16px", background: "#141414" } }}
+    >
+      {trade && params && (
+        <Space direction="vertical" style={{ width: "100%" }} size={10}>
+          {/* 触发条件信息卡 */}
+          <Row gutter={8}>
+            <Col span={12}>
+              <div style={{ background: "#1a2e1a", border: "1px solid #2d5a2d", borderRadius: 6, padding: "8px 12px" }}>
+                <Text type="secondary" style={{ fontSize: 11 }}>买入触发</Text>
+                <div style={{ marginTop: 2 }}>
+                  <Text style={{ fontWeight: 700, color: "#52c41a", fontSize: 18 }}>
+                    {trade.buy_trigger_val != null ? trade.buy_trigger_val.toFixed(4) : "—"}
+                  </Text>
+                  {params && (
+                    <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                      {subName} {OP_SYMBOL[params.buy_op] ?? params.buy_op} {params.buy_threshold} ✓
+                    </Text>
+                  )}
+                </div>
+                <Text type="secondary" style={{ fontSize: 11 }}>
+                  {trade.buy_date} · 收盘价 ¥{trade.buy_price.toFixed(3)}
+                </Text>
+              </div>
+            </Col>
+            <Col span={12}>
+              {trade.sell_date ? (
+                <div style={{ background: "#2e1a1a", border: "1px solid #5a2d2d", borderRadius: 6, padding: "8px 12px" }}>
+                  <Text type="secondary" style={{ fontSize: 11 }}>卖出触发</Text>
+                  <div style={{ marginTop: 2 }}>
+                    <Text style={{ fontWeight: 700, color: "#f5222d", fontSize: 18 }}>
+                      {trade.sell_trigger_val != null ? trade.sell_trigger_val.toFixed(4) : "—"}
+                    </Text>
+                    {params && (
+                      <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                        {subName} {OP_SYMBOL[params.sell_op] ?? params.sell_op} {params.sell_threshold} ✓
+                      </Text>
+                    )}
+                  </div>
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    {trade.sell_date} · 收盘价 ¥{(trade.sell_price ?? 0).toFixed(3)}
+                    {" · "}
+                    <span style={{ color: pnlColor(trade.pnl_pct) }}>{fmtPct(trade.pnl_pct)}</span>
+                  </Text>
+                </div>
+              ) : (
+                <div style={{ background: "#2e2a14", border: "1px solid #5a4e14", borderRadius: 6, padding: "8px 12px" }}>
+                  <Text type="secondary" style={{ fontSize: 11 }}>持有中</Text>
+                  <div style={{ marginTop: 2 }}>
+                    <Text style={{ color: "#faad14" }}>尚未触发卖出条件</Text>
+                  </div>
+                  <Text type="secondary" style={{ fontSize: 11 }}>
+                    等待 {subName} {OP_SYMBOL[params.sell_op] ?? params.sell_op} {params.sell_threshold}
+                  </Text>
+                </div>
+              )}
+            </Col>
+          </Row>
+
+          {/* 图表区 */}
+          <div style={{ background: "#0d0d0d", borderRadius: 6, padding: "8px 4px" }}>
+            <Spin spinning={loading} tip="加载图表...">
+              {chartData ? (
+                <div ref={chartRef} style={{ width: "100%", height: 440 }} />
+              ) : !loading ? (
+                <div style={{ height: 440, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Text type="secondary">暂无数据</Text>
+                </div>
+              ) : (
+                <div style={{ height: 440 }} />
+              )}
+            </Spin>
+            <div style={{ paddingLeft: 8, marginTop: 2 }}>
+              <Text type="secondary" style={{ fontSize: 10 }}>
+                上图：K线（▲买入 ▼卖出）· 下图：{subName}（绿虚线=买入阈值 红虚线=卖出阈值）
+              </Text>
+            </div>
+          </div>
+        </Space>
+      )}
+    </Drawer>
+  );
+}
+
 export default function BacktestPage() {
   const [form] = Form.useForm();
 
@@ -136,9 +636,22 @@ export default function BacktestPage() {
   const [loadingInd, setLoadingInd] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BacktestRunOut | null>(null);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [activeTemplate, setActiveTemplate] = useState<StrategyTemplate | null>(null);
+
+  // 最近一次回测的参数（供 Drawer 使用）
+  const [lastParams, setLastParams] = useState<{
+    buy_op: string; buy_threshold: number;
+    sell_op: string; sell_threshold: number;
+    user_indicator_id: number; sub_key: string;
+    start_date: string; end_date: string;
+  } | null>(null);
+  const [selectedTrade, setSelectedTrade] = useState<BacktestTradeRow | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstance = useRef<echarts.ECharts | null>(null);
+  const scrollYRef = useRef(0);
 
   const selectedId = Form.useWatch("user_indicator_id", form);
   const selectedInd = useMemo(
@@ -153,6 +666,18 @@ export default function BacktestPage() {
     return [];
   }, [selectedInd]);
 
+  // 模板模式下的子线显示名（从已加载指标定义中查找）
+  const templateSubName = useMemo(() => {
+    if (!activeTemplate) return "";
+    const matchedInd = indicators.find((x) => x.code === activeTemplate.indicatorCode);
+    if (!matchedInd?.definition) return activeTemplate.subKey;
+    const subs = (matchedInd.definition as Record<string, unknown>)?.sub_indicators as
+      { key?: string; name?: string }[] | undefined;
+    if (!Array.isArray(subs)) return activeTemplate.subKey;
+    const found = subs.find((s) => s.key === activeTemplate.subKey);
+    return found?.name || activeTemplate.subKey;
+  }, [activeTemplate, indicators]);
+
   const loadIndicators = useCallback(async () => {
     setLoadingInd(true);
     try {
@@ -166,6 +691,25 @@ export default function BacktestPage() {
   }, []);
 
   useEffect(() => { void loadIndicators(); }, [loadIndicators]);
+
+  const handleApplyTemplate = useCallback((tpl: StrategyTemplate) => {
+    // 在已加载的指标列表里找到与模板对应的预置指标
+    const matched = indicators.find((x) => x.code === tpl.indicatorCode);
+    form.setFieldsValue({
+      buy_op: tpl.buy_op,
+      buy_threshold: tpl.buy_threshold,
+      sell_op: tpl.sell_op,
+      sell_threshold: tpl.sell_threshold,
+      max_positions: tpl.max_positions,
+      ...(matched ? { user_indicator_id: matched.id, sub_key: tpl.subKey } : {}),
+    });
+    setActiveTemplate(tpl);
+    if (matched) {
+      message.success(`已套用「${tpl.name}」模板`);
+    } else {
+      message.warning(`已套用「${tpl.name}」模板，但未找到预置指标（请重启后端以生成预置指标）`);
+    }
+  }, [form, indicators]);
 
   useEffect(() => {
     if (!selectedInd) { form.setFieldValue("sub_key", undefined); return; }
@@ -306,19 +850,55 @@ export default function BacktestPage() {
           <span style={{ color: pnlColor(v) }}>{fmtPct(v)}</span>
         ),
     },
+    {
+      title: "触发值",
+      key: "trigger",
+      width: 100,
+      render: (_: unknown, row: BacktestTradeRow) => (
+        <Space direction="vertical" size={0}>
+          <Text style={{ fontSize: 11 }}>
+            <span style={{ color: "#52c41a", fontWeight: 600 }}>买</span>{" "}
+            {row.buy_trigger_val != null ? row.buy_trigger_val.toFixed(3) : "—"}
+          </Text>
+          {row.sell_date ? (
+            <Text style={{ fontSize: 11 }}>
+              <span style={{ color: "#f5222d", fontWeight: 600 }}>卖</span>{" "}
+              {row.sell_trigger_val != null ? row.sell_trigger_val.toFixed(3) : "—"}
+            </Text>
+          ) : (
+            <Text type="secondary" style={{ fontSize: 10 }}>持有中</Text>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: "",
+      key: "detail",
+      width: 36,
+      render: (_: unknown, row: BacktestTradeRow) => (
+        <Tooltip title="查看K线验证图">
+          <LineChartOutlined
+            style={{ cursor: "pointer", color: "#4096ff", fontSize: 15 }}
+            onClick={(e) => { e.stopPropagation(); scrollYRef.current = window.scrollY; setSelectedTrade(row); setDrawerOpen(true); }}
+          />
+        </Tooltip>
+      ),
+    },
   ];
 
   const onRun = async () => {
     try {
       const v = await form.validateFields();
       const [start, end] = v.date_range as [Dayjs, Dayjs];
+      const startStr = start.format("YYYY-MM-DD");
+      const endStr   = end.format("YYYY-MM-DD");
       setRunning(true);
       setResult(null);
       if (chartInstance.current) chartInstance.current.clear();
       try {
         const out = await runBacktest({
-          start_date: start.format("YYYY-MM-DD"),
-          end_date: end.format("YYYY-MM-DD"),
+          start_date: startStr,
+          end_date: endStr,
           user_indicator_id: v.user_indicator_id,
           sub_key: v.sub_key ?? null,
           buy_op: v.buy_op,
@@ -330,6 +910,13 @@ export default function BacktestPage() {
           max_scan: v.max_scan ?? 3000,
         });
         setResult(out);
+        setLastParams({
+          buy_op: v.buy_op, buy_threshold: v.buy_threshold,
+          sell_op: v.sell_op, sell_threshold: v.sell_threshold,
+          user_indicator_id: v.user_indicator_id,
+          sub_key: v.sub_key ?? "",
+          start_date: startStr, end_date: endStr,
+        });
         const sign = out.total_return_pct > 0 ? "+" : "";
         message.success(`回测完成：${out.total_trades} 笔交易，总收益 ${sign}${out.total_return_pct.toFixed(2)}%`);
       } catch (e) {
@@ -356,7 +943,39 @@ export default function BacktestPage() {
       </div>
 
       {/* 配置区 */}
-      <Card title="回测配置" styles={{ body: { paddingBottom: 8 } }}>
+      <Card
+        title="回测配置"
+        styles={{ body: { paddingBottom: 8 } }}
+        extra={
+          activeTemplate ? (
+            <Space size={8}>
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0, color: "#8c8c8c" }}
+                onClick={() => setActiveTemplate(null)}
+              >
+                自定义配置
+              </Button>
+              <Button
+                icon={<AppstoreOutlined />}
+                size="small"
+                onClick={() => setTemplateOpen(true)}
+              >
+                更换模板
+              </Button>
+            </Space>
+          ) : (
+            <Button
+              icon={<AppstoreOutlined />}
+              size="small"
+              onClick={() => setTemplateOpen(true)}
+            >
+              策略模板
+            </Button>
+          )
+        }
+      >
         {loadingInd ? (
           <Skeleton active paragraph={{ rows: 3 }} />
         ) : (
@@ -374,87 +993,185 @@ export default function BacktestPage() {
               max_scan: 3000,
             }}
           >
-            <Row gutter={[16, 0]}>
-              <Col xs={24} md={8}>
-                <Form.Item name="date_range" label="回测时间范围" rules={[{ required: true, message: "请选择时间范围" }]}>
-                  <DatePicker.RangePicker style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={8}>
-                <Form.Item name="user_indicator_id" label="自定义指标" rules={[{ required: true, message: "请选择指标" }]}>
-                  <Select
-                    placeholder="选择已保存的指标"
-                    options={indicators.map((r) => ({ value: r.id, label: `${r.display_name} (${r.code})` }))}
-                    showSearch
-                    optionFilterProp="label"
-                    style={{ width: "100%" }}
-                  />
-                </Form.Item>
-              </Col>
-              {subOpts.length > 0 && (
-                <Col xs={24} md={8}>
-                  <Form.Item name="sub_key" label="参与回测的子线" rules={[{ required: true, message: "请选择子线" }]}>
-                    <Select placeholder="选择子线" options={subOpts} style={{ width: "100%" }} />
-                  </Form.Item>
-                </Col>
-              )}
-            </Row>
+            {activeTemplate ? (
+              /* ── 模板模式：简化表单 ── */
+              <>
+                {/* 模板信息横幅 */}
+                <div style={{
+                  background: "#111b2e",
+                  border: "1px solid #1d3461",
+                  borderRadius: 8,
+                  padding: "10px 16px",
+                  marginBottom: 16,
+                }}>
+                  <Space size={8} style={{ marginBottom: 4 }}>
+                    <Text strong style={{ fontSize: 14 }}>{activeTemplate.name}</Text>
+                    <Tag color={BADGE_COLOR[activeTemplate.badge] ?? "default"} style={{ fontSize: 11 }}>
+                      {activeTemplate.badge}
+                    </Tag>
+                  </Space>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{activeTemplate.desc}</Text>
+                  </div>
+                </div>
 
-            <Row gutter={[16, 0]}>
-              <Col xs={12} md={3}>
-                <Form.Item name="buy_op" label="买入条件">
-                  <Select options={compareOptions} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} md={3}>
-                <Form.Item name="buy_threshold" label="买入阈值">
-                  <InputNumber step={0.0001} style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} md={3}>
-                <Form.Item name="sell_op" label="卖出条件">
-                  <Select options={compareOptions} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} md={3}>
-                <Form.Item name="sell_threshold" label="卖出阈值">
-                  <InputNumber step={0.0001} style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} md={4}>
-                <Form.Item name="initial_capital" label="初始资金（元）">
-                  <InputNumber
-                    min={1000} step={10000}
-                    formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}
-                    style={{ width: "100%" }}
-                  />
-                </Form.Item>
-              </Col>
-              <Col xs={12} md={3}>
-                <Form.Item name="max_positions" label="最大持仓（只）">
-                  <InputNumber min={1} max={10} style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col xs={12} md={3}>
-                <Form.Item name="max_scan" label="最多扫描只数" tooltip="每日最多扫描的股票数，越大越慢">
-                  <InputNumber min={100} max={8000} step={500} style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col xs={24} md={2} style={{ display: "flex", alignItems: "flex-end" }}>
-                <Form.Item style={{ marginBottom: 24, width: "100%" }}>
-                  <Button type="primary" onClick={() => void onRun()} loading={running} block>
-                    {running ? "回测中…" : "开始回测"}
-                  </Button>
-                </Form.Item>
-              </Col>
-            </Row>
+                {/* 隐藏字段（由模板填充，不展示给用户） */}
+                <Form.Item name="user_indicator_id" hidden><InputNumber /></Form.Item>
+                <Form.Item name="sub_key" hidden><Input /></Form.Item>
+                <Form.Item name="buy_op" hidden><Input /></Form.Item>
+                <Form.Item name="sell_op" hidden><Input /></Form.Item>
+
+                <Row gutter={[16, 0]}>
+                  <Col xs={24} md={8}>
+                    <Form.Item name="date_range" label="回测时间范围" rules={[{ required: true, message: "请选择时间范围" }]}>
+                      <DatePicker.RangePicker style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={4}>
+                    <Form.Item
+                      name="buy_threshold"
+                      label={
+                        <span>
+                          {templateSubName}{" "}
+                          <Text style={{ color: "#52c41a", fontWeight: 600 }}>
+                            {OP_SYMBOL[activeTemplate.buy_op] ?? activeTemplate.buy_op}
+                          </Text>
+                          {" "}阈值<Text type="secondary" style={{ fontSize: 11 }}>（买入）</Text>
+                        </span>
+                      }
+                    >
+                      <InputNumber step={0.0001} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={4}>
+                    <Form.Item
+                      name="sell_threshold"
+                      label={
+                        <span>
+                          {templateSubName}{" "}
+                          <Text style={{ color: "#f5222d", fontWeight: 600 }}>
+                            {OP_SYMBOL[activeTemplate.sell_op] ?? activeTemplate.sell_op}
+                          </Text>
+                          {" "}阈值<Text type="secondary" style={{ fontSize: 11 }}>（卖出）</Text>
+                        </span>
+                      }
+                    >
+                      <InputNumber step={0.0001} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={4}>
+                    <Form.Item name="initial_capital" label="初始资金（元）">
+                      <InputNumber
+                        min={1000} step={10000}
+                        formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}
+                        style={{ width: "100%" }}
+                      />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={2}>
+                    <Form.Item name="max_positions" label="最大持仓（只）">
+                      <InputNumber min={1} max={10} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={2}>
+                    <Form.Item name="max_scan" label="扫描只数" tooltip="每日最多扫描的股票数，越大越慢">
+                      <InputNumber min={100} max={8000} step={500} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={2} style={{ display: "flex", alignItems: "flex-end" }}>
+                    <Form.Item style={{ marginBottom: 24, width: "100%" }}>
+                      <Button type="primary" onClick={() => void onRun()} loading={running} block>
+                        {running ? "回测中…" : "开始回测"}
+                      </Button>
+                    </Form.Item>
+                  </Col>
+                </Row>
+              </>
+            ) : (
+              /* ── 自定义模式：完整表单 ── */
+              <>
+                <Row gutter={[16, 0]}>
+                  <Col xs={24} md={8}>
+                    <Form.Item name="date_range" label="回测时间范围" rules={[{ required: true, message: "请选择时间范围" }]}>
+                      <DatePicker.RangePicker style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={8}>
+                    <Form.Item name="user_indicator_id" label="自定义指标" rules={[{ required: true, message: "请选择指标" }]}>
+                      <Select
+                        placeholder="选择已保存的指标"
+                        options={indicators.map((r) => ({ value: r.id, label: `${r.display_name} (${r.code})` }))}
+                        showSearch
+                        optionFilterProp="label"
+                        style={{ width: "100%" }}
+                      />
+                    </Form.Item>
+                  </Col>
+                  {subOpts.length > 0 && (
+                    <Col xs={24} md={8}>
+                      <Form.Item name="sub_key" label="参与回测的子线" rules={[{ required: true, message: "请选择子线" }]}>
+                        <Select placeholder="选择子线" options={subOpts} style={{ width: "100%" }} />
+                      </Form.Item>
+                    </Col>
+                  )}
+                </Row>
+
+                <Row gutter={[16, 0]}>
+                  <Col xs={12} md={3}>
+                    <Form.Item name="buy_op" label="买入条件">
+                      <Select options={compareOptions} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={3}>
+                    <Form.Item name="buy_threshold" label="买入阈值">
+                      <InputNumber step={0.0001} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={3}>
+                    <Form.Item name="sell_op" label="卖出条件">
+                      <Select options={compareOptions} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={3}>
+                    <Form.Item name="sell_threshold" label="卖出阈值">
+                      <InputNumber step={0.0001} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={4}>
+                    <Form.Item name="initial_capital" label="初始资金（元）">
+                      <InputNumber
+                        min={1000} step={10000}
+                        formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}
+                        style={{ width: "100%" }}
+                      />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={3}>
+                    <Form.Item name="max_positions" label="最大持仓（只）">
+                      <InputNumber min={1} max={10} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={12} md={3}>
+                    <Form.Item name="max_scan" label="最多扫描只数" tooltip="每日最多扫描的股票数，越大越慢">
+                      <InputNumber min={100} max={8000} step={500} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={2} style={{ display: "flex", alignItems: "flex-end" }}>
+                    <Form.Item style={{ marginBottom: 24, width: "100%" }}>
+                      <Button type="primary" onClick={() => void onRun()} loading={running} block>
+                        {running ? "回测中…" : "开始回测"}
+                      </Button>
+                    </Form.Item>
+                  </Col>
+                </Row>
+              </>
+            )}
           </Form>
         )}
       </Card>
 
       {/* 结果区 */}
-      {result && (
-        <Space direction="vertical" size="large" style={{ width: "100%" }}>
+      {result && (        <Space direction="vertical" size="large" style={{ width: "100%" }}>
 
           {/* 绩效总览卡片组 */}
           <Row gutter={[16, 16]}>
@@ -656,12 +1373,34 @@ export default function BacktestPage() {
               dataSource={result.trades}
               rowClassName={zebraRowClass}
               pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 笔` }}
-              scroll={{ x: 700 }}
+              scroll={{ x: 900 }}
+              onRow={(row) => ({
+                style: { cursor: "pointer" },
+                onClick: () => { scrollYRef.current = window.scrollY; setSelectedTrade(row); setDrawerOpen(true); },
+              })}
             />
           </Card>
 
         </Space>
       )}
+
+      {/* 策略模板弹窗 */}
+      <TemplatePanel
+        open={templateOpen}
+        onClose={() => setTemplateOpen(false)}
+        onApply={handleApplyTemplate}
+      />
+
+      {/* 交易K线验证 Drawer */}
+      <TradeDetailDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        onAfterClose={() => requestAnimationFrame(() => window.scrollTo(0, scrollYRef.current))}
+        trade={selectedTrade}
+        params={lastParams}
+        startDate={lastParams?.start_date ?? ""}
+        endDate={lastParams?.end_date ?? ""}
+      />
     </Space>
   );
 }

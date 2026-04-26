@@ -170,10 +170,27 @@ def trigger_fetch_all(body: ManualFetchAllRequest, db: Session = Depends(get_db)
         .all()
     ]
     if not codes:
-        raise HTTPException(
-            status_code=400,
-            detail="本地尚无个股元数据（instrument_meta 为空），请先在数据后台执行「同步全量标的元数据/股票列表」",
-        )
+        # instrument_meta 为空（首次部署）→ 自动先同步股票元数据，再继续
+        try:
+            incremental_sync_stock_list_meta(db)
+        except Exception as ex:  # noqa: BLE001
+            raise HTTPException(
+                status_code=400,
+                detail=f"本地尚无个股元数据，自动同步股票列表失败：{ex}。请检查 Tushare Token 配置后重试。",
+            ) from ex
+        ensure_symbols_for_stock_meta(db)
+        codes = [
+            r[0]
+            for r in db.query(InstrumentMeta.ts_code)
+            .filter(InstrumentMeta.asset_type == "stock")
+            .order_by(InstrumentMeta.ts_code.asc())
+            .all()
+        ]
+        if not codes:
+            raise HTTPException(
+                status_code=400,
+                detail="同步股票列表后仍无数据，请确认 Tushare Token 有效且网络可达。",
+            )
     try:
         run = enqueue_symbol_list_sync(
             trigger="manual_fetch_all",

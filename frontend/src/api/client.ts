@@ -819,6 +819,8 @@ export type BacktestTradeRow = {
   sell_price: number | null;
   pnl: number | null;
   pnl_pct: number | null;
+  buy_trigger_val: number | null;
+  sell_trigger_val: number | null;
 };
 
 /** 回测完整结果 */
@@ -857,6 +859,38 @@ export async function runBacktest(body: BacktestRunIn): Promise<BacktestRunOut> 
   const { data } = await api.post<BacktestRunOut>("/backtest/run", body, {
     timeout: 300_000,
   });
+  return data;
+}
+
+/** 回测交易验证图：K线 + 指标子线 */
+export type TradeChartBarPoint = {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+};
+
+export type TradeChartIndicatorPoint = {
+  time: string;
+  value: number | null;
+};
+
+export type TradeChartOut = {
+  bars: TradeChartBarPoint[];
+  indicator: TradeChartIndicatorPoint[];
+  sub_key: string;
+  sub_display_name: string;
+};
+
+export async function fetchTradeChart(params: {
+  ts_code: string;
+  user_indicator_id: number;
+  sub_key: string;
+  start_date: string;
+  end_date: string;
+}): Promise<TradeChartOut> {
+  const { data } = await api.get<TradeChartOut>("/backtest/trade-chart", { params });
   return data;
 }
 
