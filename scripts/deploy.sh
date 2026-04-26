@@ -173,6 +173,16 @@ if $FIRST_RUN; then
     install_system_deps
 fi
 
+# 无论首次还是更新，确保 nginx 已安装
+if ! command -v nginx &>/dev/null; then
+    info "未检测到 Nginx，正在安装..."
+    if [ -f /etc/debian_version ]; then
+        apt-get install -y -q nginx
+    elif [ -f /etc/redhat-release ]; then
+        yum install -y nginx
+    fi
+fi
+
 fetch_code
 setup_backend
 build_frontend
