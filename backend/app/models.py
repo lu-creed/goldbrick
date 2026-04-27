@@ -14,6 +14,22 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+class User(Base):
+    """用户账号表：存储登录凭证和权限标志。
+
+    is_admin=True 的用户可以管理其他账号、触发同步等后台操作。
+    hashed_password 使用 bcrypt 哈希，原始密码不入库。
+    """
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Symbol(Base):
     """本地股票/指数池：用户关注并打算拉取日线的标的目录。
 
@@ -239,18 +255,80 @@ class UserIndicator(Base):
     形式二（旧版 legacy）：expr 不为空，单行 Python 风格四则运算表达式（功能受限）。
     保存时必须对一只股票试算通过才能入库，确保公式无误。
     code 是英文标识（创建后不可更改），display_name 是前端展示名。
+
+    user_id=NULL 表示系统预置模板，所有用户可见但不可修改删除。
     """
     __tablename__ = "user_indicators"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # 唯一英文标识，如 my_ma_diff
-    display_name: Mapped[str] = mapped_column(String(128))                   # 展示名，如 MA差值
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    code: Mapped[str] = mapped_column(String(64), index=True)              # 英文标识，如 my_ma_diff
+    display_name: Mapped[str] = mapped_column(String(128))                  # 展示名，如 MA差值
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # 旧版：单条四则表达式。新版可为空串，完整定义见 definition_json。
     expr: Mapped[str] = mapped_column(Text, default="")
-    definition_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # DSL JSON 字符串
+    definition_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("user_id", "code", name="uq_user_indicator_user_code"),)
+
+
+class ScreeningHistory(Base):
+    """条件选股历史记录：每次执行选股后自动保存一条，供用户回看历史结果。
+
+    indicator_name / indicator_code 冗余存储：即使用户后续删除了指标，
+    历史记录仍能展示当时使用的指标名称。
+    result_json：命中股票列表的 JSON 字符串，格式同 ScreeningStockRow 列表。
+    """
+    __tablename__ = "screening_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    trade_date: Mapped[str] = mapped_column(String(16))                    # 选股交易日，如 2024-01-10
+    user_indicator_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)   # 指标 ID（指标被删除后为 null）
+    indicator_name: Mapped[str] = mapped_column(String(128), default="")   # 指标展示名（冗余，防指标删除后丢失）
+    indicator_code: Mapped[str] = mapped_column(String(64), default="")    # 指标英文代码（冗余）
+    sub_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)   # DSL 子线 key
+    compare_op: Mapped[str] = mapped_column(String(8), default="gt")       # 比较运算符
+    threshold: Mapped[float] = mapped_column(Numeric(18, 6), default=0.0)  # 比较阈值
+    scanned: Mapped[int] = mapped_column(Integer, default=0)               # 实际扫描数量
+    matched: Mapped[int] = mapped_column(Integer, default=0)               # 命中数量
+    result_json: Mapped[str] = mapped_column(Text, default="[]")           # 命中股票列表 JSON
+
+
+class BacktestRecord(Base):
+    """回测历史记录：每次执行回测后自动保存一条，供用户查看历史回测结果。
+
+    indicator_name / indicator_code 冗余存储原因同 ScreeningHistory。
+    summary_* 字段冗余存储核心指标，便于列表页直接展示无需解析 JSON。
+    result_json：完整 BacktestRunOut 的 JSON 字符串，供详情页还原图表和交易明细。
+    """
+    __tablename__ = "backtest_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    start_date: Mapped[str] = mapped_column(String(16))                    # 回测开始日
+    end_date: Mapped[str] = mapped_column(String(16))                      # 回测结束日
+    user_indicator_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    indicator_name: Mapped[str] = mapped_column(String(128), default="")   # 指标展示名（冗余）
+    indicator_code: Mapped[str] = mapped_column(String(64), default="")    # 指标英文代码（冗余）
+    sub_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    buy_op: Mapped[str] = mapped_column(String(8), default="gt")
+    buy_threshold: Mapped[float] = mapped_column(Numeric(18, 6), default=0.0)
+    sell_op: Mapped[str] = mapped_column(String(8), default="lt")
+    sell_threshold: Mapped[float] = mapped_column(Numeric(18, 6), default=0.0)
+    initial_capital: Mapped[float] = mapped_column(Numeric(20, 2), default=100000.0)
+    max_positions: Mapped[int] = mapped_column(Integer, default=3)
+    # 核心绩效指标冗余存储（列表页直接展示，无需解析 JSON）
+    total_return_pct: Mapped[float] = mapped_column(Numeric(10, 4), default=0.0)
+    max_drawdown_pct: Mapped[float] = mapped_column(Numeric(10, 4), default=0.0)
+    total_trades: Mapped[int] = mapped_column(Integer, default=0)
+    win_rate: Mapped[Optional[float]] = mapped_column(Numeric(6, 2), nullable=True)
+    annualized_return: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
+    sharpe_ratio: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
+    result_json: Mapped[str] = mapped_column(Text, default="{}")           # 完整结果 JSON（供详情页使用）
 
 
 class DavStockWatch(Base):
@@ -260,16 +338,36 @@ class DavStockWatch(Base):
     manual_payout_ratio: 手动填写的近两年平均派息率（%，如 33.95 表示 33.95%）
     manual_eps: 手动填写的预测全年 EPS（元）
     notes: 纠正依据（行业基准、大股东诉求、公告纠正等自由文本）
-    积分升级后，payout_ratio 和 eps 将从 Tushare fina_indicator+dividend 自动填充，
-    manual 字段作为人工覆盖优先级高于自动值。
     """
     __tablename__ = "dav_stock_watch"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    ts_code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    ts_code: Mapped[str] = mapped_column(String(32), index=True)
     dav_class: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)   # A/B/C/D
     manual_payout_ratio: Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
     manual_eps: Mapped[Optional[float]] = mapped_column(Numeric(12, 4), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("user_id", "ts_code", name="uq_dav_user_ts_code"),)
+
+
+class WatchlistStock(Base):
+    """轻量自选股池：用户手动收藏的股票，用于快速跳转 K 线或批量关注。
+
+    与 symbols 表（数据同步池）区分：
+    - symbols：需要拉取日线数据的标的，影响同步任务
+    - watchlist：纯粹的「收藏/关注」标记，不触发任何同步
+    """
+    __tablename__ = "watchlist"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    ts_code: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("user_id", "ts_code", name="uq_watchlist_user_ts_code"),)

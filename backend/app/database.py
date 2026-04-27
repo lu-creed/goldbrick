@@ -139,6 +139,44 @@ def ensure_sync_runs_control_columns() -> None:
             )
 
 
+def ensure_screening_history_table() -> None:
+    """为老数据库建立 screening_history 表（新版本首次启动时自动创建）。
+
+    SQLite 的 create_all 只会创建「还不存在」的表，不会修改已有表结构，
+    所以直接调用 create_all 就够了，这里只是一个语义明确的入口供 lifespan 调用。
+    """
+    # create_all 已在 lifespan 中统一调用，此函数保留为显式文档说明
+    pass
+
+
+def ensure_backtest_records_table() -> None:
+    """为老数据库建立 backtest_records 表（同 ensure_screening_history_table）。"""
+    pass
+
+
+def migrate_for_user_system() -> None:
+    """用户体系一次性迁移：删除用户私有表，让 create_all 以新 schema（含 user_id）重建。
+
+    幂等：通过检查 users 表是否已存在判断是否已迁移。
+    删除顺序从子表到父表，避免外键约束错误。
+    """
+    if not str(engine.url).startswith("sqlite"):
+        return
+    with engine.begin() as conn:
+        tables = {r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if "users" in tables:
+            return
+        for t in [
+            "screening_history",
+            "backtest_records",
+            "watchlist",
+            "dav_stock_watch",
+            "user_indicators",
+        ]:
+            conn.execute(text(f"DROP TABLE IF EXISTS {t}"))
+        log.info("用户体系迁移：已清除用户私有表，将由 create_all 重建")
+
+
 def get_db():
     """FastAPI 依赖注入：提供一个数据库 Session，请求结束后自动关闭。
 
@@ -153,3 +191,27 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def ensure_default_admin_user(db) -> None:
+    """确保数据库中至少有一个管理员账号。
+
+    首次启动时从 settings.admin_username / settings.admin_password 读取并创建。
+    若已存在管理员则跳过（幂等）。
+    """
+    from app.config import settings
+    from app.models import User
+
+    if db.query(User).filter(User.is_admin.is_(True)).first():
+        return
+    from passlib.context import CryptContext
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    user = User(
+        username=settings.admin_username,
+        hashed_password=pwd_context.hash(settings.admin_password),
+        is_admin=True,
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+    log.info("已创建默认管理员账号: %s", settings.admin_username)

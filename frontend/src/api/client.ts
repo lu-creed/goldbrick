@@ -11,7 +11,9 @@
  * - 指标库：fetchIndicators、fetchIndicatorDetail、seedIndicators；自定义指标 custom* 系列
  * - 个股列表：fetchDailyUniverse
  * - 股票复盘：fetchReplayDaily
- * - 条件选股：runScreening
+ * - 条件选股：runScreening；历史记录：fetchScreeningHistory、fetchScreeningHistoryDetail、deleteScreeningHistory
+ * - 回测：runBacktest；历史记录：fetchBacktestRecords、fetchBacktestRecordDetail、deleteBacktestRecord
+ * - 自选股池：fetchWatchlist、addToWatchlist、removeFromWatchlist
  */
 import axios from "axios";
 
@@ -24,6 +26,29 @@ export const api = axios.create({
   baseURL: "/api",
   timeout: 120_000,
 });
+
+// ── Auth 拦截器 ────────────────────────────────────────────────
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("gb_token");
+  if (token) {
+    config.headers = config.headers ?? {};
+    config.headers["Authorization"] = `Bearer ${token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (axios.isAxiosError(err) && err.response?.status === 401) {
+      localStorage.removeItem("gb_token");
+      localStorage.removeItem("gb_user");
+      window.location.href = "/login";
+    }
+    return Promise.reject(err);
+  },
+);
 
 /**
  * 从 Axios 错误对象中提取可读的错误信息
@@ -183,6 +208,7 @@ export type ScreeningRunOut = {
   matched: number;              // 满足条件的股票数
   note: string | null;          // 后端警告信息（如数据不完整）
   items: ScreeningStockRow[];   // 命中的股票列表
+  history_id: number | null;    // 本次选股自动保存的历史记录 ID（保存失败时为 null）
 };
 
 /**
@@ -203,6 +229,50 @@ export async function runScreening(body: {
   max_scan?: number;
 }) {
   const { data } = await api.post<ScreeningRunOut>("/screening/run", body);
+  return data;
+}
+
+// ── 条件选股历史记录 ─────────────────────────────────────────────
+
+/** 选股历史记录的列表摘要（不含命中股票列表） */
+export type ScreeningHistoryItem = {
+  id: number;
+  created_at: string;             // 执行时间（ISO 格式）
+  trade_date: string;             // 选股日期
+  indicator_name: string;         // 指标显示名（冗余存储，删除指标后仍可展示）
+  indicator_code: string;         // 指标英文标识
+  user_indicator_id: number | null;
+  sub_key: string | null;         // 参与选股的子线 key
+  compare_op: string | null;      // 比较运算符（gt/gte/lt/le/eq/ne）
+  threshold: number;              // 阈值
+  scanned: number;                // 扫描总数
+  matched: number;                // 命中数
+};
+
+/** 选股历史详情（包含命中的股票列表，从 result_json 反序列化） */
+export type ScreeningHistoryDetail = ScreeningHistoryItem & {
+  items: ScreeningStockRow[];     // 命中的股票列表
+};
+
+/**
+ * 获取条件选股历史记录列表（按执行时间倒序）
+ * @param params.page      - 页码（从 1 开始）
+ * @param params.page_size - 每页条数（5~100）
+ */
+export async function fetchScreeningHistory(params?: { page?: number; page_size?: number }) {
+  const { data } = await api.get<ScreeningHistoryItem[]>("/screening/history", { params });
+  return data;
+}
+
+/** 获取单条选股历史的详情（含命中股票列表） */
+export async function fetchScreeningHistoryDetail(id: number) {
+  const { data } = await api.get<ScreeningHistoryDetail>(`/screening/history/${id}`);
+  return data;
+}
+
+/** 删除指定的选股历史记录（不可恢复） */
+export async function deleteScreeningHistory(id: number) {
+  const { data } = await api.delete<{ ok: boolean }>(`/screening/history/${id}`);
   return data;
 }
 
@@ -894,6 +964,60 @@ export async function fetchTradeChart(params: {
   return data;
 }
 
+// ── 回测历史记录 ─────────────────────────────────────────────────
+// （每次在「开始回测」页面执行后自动保存，此处只负责读取和删除）
+
+/** 回测历史列表中的一行摘要（不含完整资金曲线和交易记录） */
+export type BacktestRecordItem = {
+  id: number;
+  created_at: string;             // 执行时间（ISO 格式）
+  start_date: string;             // 回测起始日
+  end_date: string;               // 回测截止日
+  indicator_name: string;         // 指标显示名（冗余存储）
+  indicator_code: string;         // 指标英文标识
+  user_indicator_id: number | null;
+  sub_key: string | null;         // 参与回测的子线
+  buy_op: string;                 // 买入比较运算符
+  buy_threshold: number;          // 买入阈值
+  sell_op: string;                // 卖出比较运算符
+  sell_threshold: number;         // 卖出阈值
+  initial_capital: number;        // 初始资金（元）
+  max_positions: number;          // 最大持仓只数
+  total_return_pct: number;       // 总收益率（%）
+  max_drawdown_pct: number;       // 最大回撤（%）
+  total_trades: number;           // 总交易笔数
+  win_rate: number | null;        // 胜率（%）
+  annualized_return: number | null;  // 年化收益率（%）
+  sharpe_ratio: number | null;    // 夏普比率
+};
+
+/** 回测历史详情（包含完整结果：资金曲线 + 交易记录，从 result_json 反序列化） */
+export type BacktestRecordDetail = BacktestRecordItem & {
+  result: BacktestRunOut | null;  // 完整回测结果（含资金曲线和交易明细）
+};
+
+/**
+ * 获取回测历史记录列表（按执行时间倒序）
+ * @param params.page      - 页码（从 1 开始）
+ * @param params.page_size - 每页条数（5~100）
+ */
+export async function fetchBacktestRecords(params?: { page?: number; page_size?: number }) {
+  const { data } = await api.get<BacktestRecordItem[]>("/backtest/records", { params });
+  return data;
+}
+
+/** 获取单条回测历史的详情（含完整资金曲线与交易记录） */
+export async function fetchBacktestRecordDetail(id: number) {
+  const { data } = await api.get<BacktestRecordDetail>(`/backtest/records/${id}`);
+  return data;
+}
+
+/** 删除指定的回测历史记录（不可恢复） */
+export async function deleteBacktestRecord(id: number) {
+  const { data } = await api.delete<{ ok: boolean }>(`/backtest/records/${id}`);
+  return data;
+}
+
 // ── 大V情绪仪表盘 ────────────────────────────────────────────
 
 /** 情绪趋势中的单日数据点 */
@@ -988,4 +1112,84 @@ export async function updateDavStock(ts_code: string, body: DavStockPatch) {
 /** 从大V看板移除一只股票 */
 export async function removeDavStock(ts_code: string) {
   await api.delete(`/dav/stocks/${encodeURIComponent(ts_code)}`);
+}
+
+// ── 自选股池 ──────────────────────────────────────────────────────────────────
+
+export type WatchlistItem = {
+  ts_code: string;
+  name: string | null;
+  note: string | null;
+  created_at: string;
+};
+
+/** 获取全部自选股（按加入时间倒序） */
+export async function fetchWatchlist() {
+  const { data } = await api.get<WatchlistItem[]>("/watchlist/");
+  return data;
+}
+
+/** 添加一只股票到自选股池（已存在则更新 name/note） */
+export async function addToWatchlist(ts_code: string, name?: string | null, note?: string | null) {
+  const { data } = await api.post<WatchlistItem>("/watchlist/", { ts_code, name, note });
+  return data;
+}
+
+/** 从自选股池移除一只股票 */
+export async function removeFromWatchlist(ts_code: string) {
+  await api.delete(`/watchlist/${encodeURIComponent(ts_code)}`);
+}
+
+// ── 鉴权 ─────────────────────────────────────────────────────────────────────
+
+export type UserInfo = {
+  id: number;
+  username: string;
+  is_admin: boolean;
+  is_active: boolean;
+  created_at: string;
+};
+
+export type TokenOut = {
+  access_token: string;
+  token_type: string;
+};
+
+/** 登录：返回 JWT token */
+export async function login(username: string, password: string): Promise<TokenOut> {
+  const { data } = await api.post<TokenOut>("/auth/login", { username, password });
+  return data;
+}
+
+/** 获取当前登录用户信息（用于验证 token 有效性） */
+export async function fetchCurrentUser(): Promise<UserInfo> {
+  const { data } = await api.get<UserInfo>("/auth/me");
+  return data;
+}
+
+/** [管理员] 获取全部用户列表 */
+export async function fetchUsers(): Promise<UserInfo[]> {
+  const { data } = await api.get<UserInfo[]>("/auth/users");
+  return data;
+}
+
+/** [管理员] 创建新用户 */
+export async function createUser(body: { username: string; password: string; is_admin?: boolean }): Promise<UserInfo> {
+  const { data } = await api.post<UserInfo>("/auth/users", body);
+  return data;
+}
+
+/** [管理员] 修改用户（重置密码/启停账号/升降权限） */
+export async function updateUser(
+  id: number,
+  body: { password?: string; is_active?: boolean; is_admin?: boolean },
+): Promise<UserInfo> {
+  const { data } = await api.patch<UserInfo>(`/auth/users/${id}`, body);
+  return data;
+}
+
+/** [管理员] 开关开放注册 */
+export async function toggleRegistration(allow: boolean): Promise<{ allow_registration: boolean }> {
+  const { data } = await api.patch<{ allow_registration: boolean }>("/auth/settings/registration", { allow });
+  return data;
 }

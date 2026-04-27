@@ -41,12 +41,13 @@ import {
   LineChartOutlined,
   RiseOutlined,
   FallOutlined,
+  SwapOutlined,
   TrophyOutlined,
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   fetchCustomIndicators,
   fetchTradeChart,
@@ -632,6 +633,20 @@ function TradeDetailDrawer({ open, onClose, onAfterClose, trade, params, startDa
 export default function BacktestPage() {
   const [form] = Form.useForm();
 
+  // 从选股页跳转过来时，location.state 中携带选股条件，自动预填表单
+  const location = useLocation();
+  const navigate = useNavigate();
+  type FromScreeningState = {
+    user_indicator_id: number;
+    sub_key: string | null;
+    buy_op: string;
+    buy_threshold: number;
+  };
+  // useRef 保证只消费一次：指标加载完后填入，然后置 null 防止重复触发
+  const fromScreeningRef = useRef<FromScreeningState | null>(
+    (location.state as { from_screening?: FromScreeningState } | null)?.from_screening ?? null,
+  );
+
   const [indicators, setIndicators] = useState<UserIndicatorOut[]>([]);
   const [loadingInd, setLoadingInd] = useState(false);
   const [running, setRunning] = useState(false);
@@ -691,6 +706,20 @@ export default function BacktestPage() {
   }, []);
 
   useEffect(() => { void loadIndicators(); }, [loadIndicators]);
+
+  // 指标列表加载完成后，若携带了来自选股页的参数则自动填入
+  useEffect(() => {
+    if (!indicators.length || !fromScreeningRef.current) return;
+    const { user_indicator_id, sub_key, buy_op, buy_threshold } = fromScreeningRef.current;
+    fromScreeningRef.current = null; // 只消费一次
+    form.setFieldsValue({
+      user_indicator_id,
+      sub_key: sub_key ?? undefined,
+      buy_op,
+      buy_threshold,
+    });
+    message.info("已从选股页导入指标条件，请补充卖出条件后开始回测");
+  }, [indicators, form]);
 
   const handleApplyTemplate = useCallback((tpl: StrategyTemplate) => {
     // 在已加载的指标列表里找到与模板对应的预置指标
@@ -1172,6 +1201,29 @@ export default function BacktestPage() {
 
       {/* 结果区 */}
       {result && (        <Space direction="vertical" size="large" style={{ width: "100%" }}>
+
+          {/* 快捷入口：将买入条件同步到选股页，在当前截面快速看哪些股票满足条件 */}
+          <div style={{ textAlign: "right" }}>
+            <Button
+              size="small"
+              icon={<SwapOutlined />}
+              onClick={() => {
+                if (!lastParams) return;
+                navigate("/screening", {
+                  state: {
+                    from_backtest: {
+                      user_indicator_id: lastParams.user_indicator_id,
+                      sub_key: lastParams.sub_key || null,
+                      compare_op: lastParams.buy_op,
+                      threshold: lastParams.buy_threshold,
+                    },
+                  },
+                });
+              }}
+            >
+              将买入条件转为选股
+            </Button>
+          </div>
 
           {/* 绩效总览卡片组 */}
           <Row gutter={[16, 16]}>

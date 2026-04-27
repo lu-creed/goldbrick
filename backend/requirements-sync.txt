@@ -1,3 +1,2 @@
-# 在已安装 backend/requirements.txt 后执行：
-# pip install -r requirements-sync.txt
+# tushare 已并入 requirements.txt，此文件保留作兼容，无需单独安装。
 tushare>=1.2.0

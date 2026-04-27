@@ -30,6 +30,7 @@ from app.services.derivatives import daterange_start_default, recompute_consecut
 from app.services.ingestion import (
     ensure_symbols_for_stock_meta,
     fetch_and_upsert_symbol,
+    incremental_sync_stock_list_meta,
     verify_tushare_token_for_sync,
 )
 from app.services.indicator_precompute import rebuild_indicator_pre_for_symbol
@@ -248,7 +249,23 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
                     .all()
                 )
                 if not symbols:
-                    fp.write("no stock rows in pool (check instrument_meta / stock list sync), nothing to sync\n")
+                    # instrument_meta 为空（首次部署）→ 自动先同步股票元数据，再继续
+                    fp.write("instrument_meta empty, auto-syncing stock list meta...\n")
+                    try:
+                        incremental_sync_stock_list_meta(db)
+                        ensure_symbols_for_stock_meta(db)
+                        symbols = (
+                            db.query(Symbol)
+                            .join(InstrumentMeta, InstrumentMeta.ts_code == Symbol.ts_code)
+                            .filter(InstrumentMeta.asset_type == "stock")
+                            .order_by(Symbol.ts_code.asc())
+                            .all()
+                        )
+                        fp.write(f"auto-sync ok, {len(symbols)} stocks in pool\n")
+                    except Exception as ex_meta:  # noqa: BLE001
+                        fp.write(f"auto-sync stock list failed: {ex_meta}\n")
+                if not symbols:
+                    fp.write("no stock rows in pool (instrument_meta / stock list sync required), nothing to sync\n")
                 total_symbols = len(symbols)
                 loop_started_at = datetime.utcnow()
                 for idx, sym in enumerate(symbols, start=1):

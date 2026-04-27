@@ -10,19 +10,23 @@
  * 当用户点击菜单或浏览器地址栏变化时，<Routes> 会根据当前 URL
  * 找到匹配的 <Route>，然后渲染对应的页面组件。
  */
-import { Layout, Menu, Typography, theme } from "antd";
+import { Checkbox, Layout, Menu, Modal, Typography, theme } from "antd";
+import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import DataCenterPage from "./pages/DataCenterPage";
 import IndicatorLibPage from "./pages/IndicatorLibPage";
 import KlinePage from "./pages/KlinePage";
-import PrdPlaceholderPage from "./pages/PrdPlaceholderPage";
 import ReplayPage from "./pages/ReplayPage";
+import WatchlistPage from "./pages/WatchlistPage";
 import ScreeningPage from "./pages/ScreeningPage";
 import SentimentPage from "./pages/SentimentPage";
 import StockListPage from "./pages/StockListPage";
 import SyncPage from "./pages/SyncPage";
 import BacktestPage from "./pages/BacktestPage";
+import BacktestHistoryPage from "./pages/BacktestHistoryPage";
 import DavPage from "./pages/DavPage";
+import LoginPage from "./pages/LoginPage";
+import { UserInfo, fetchCurrentUser } from "./api/client";
 
 const { Header, Content, Footer } = Layout;
 const { Text } = Typography;
@@ -44,6 +48,7 @@ function menuSelectedKeys(loc: { pathname: string; hash: string }): string[] {
   if (pathname === "/data-center") return ["m-data-pool"];
   if (pathname === "/stock-list") return ["m-stock-list"];
   if (pathname === "/replay") return ["m-replay"];
+  if (pathname === "/watchlist") return ["m-watchlist"];
   if (pathname === "/sentiment") return ["m-sentiment"];
   if (pathname === "/indicators") return ["m-indicators"];
   if (pathname === "/screening") return ["m-screening"];
@@ -58,14 +63,72 @@ function menuSelectedKeys(loc: { pathname: string; hash: string }): string[] {
  * 应用根组件
  *
  * 渲染整体布局：顶部导航 + 页面内容 + 底部声明
+ * 首次访问时弹出免责声明 Modal，必须勾选「已阅读」才可关闭。
  */
 export default function App() {
+  // ── 认证状态 ────────────────────────────────────────────────
+  const [currentUser, setCurrentUser] = useState<UserInfo | null>(() => {
+    const raw = localStorage.getItem("gb_user");
+    return raw ? JSON.parse(raw) : null;
+  });
+  const [authChecking, setAuthChecking] = useState(!currentUser);
+
+  // 应用启动时用 /auth/me 验证 token 是否仍有效
+  useEffect(() => {
+    if (!localStorage.getItem("gb_token")) {
+      setAuthChecking(false);
+      return;
+    }
+    fetchCurrentUser()
+      .then((user) => {
+        setCurrentUser(user);
+        localStorage.setItem("gb_user", JSON.stringify(user));
+      })
+      .catch(() => {
+        localStorage.removeItem("gb_token");
+        localStorage.removeItem("gb_user");
+        setCurrentUser(null);
+      })
+      .finally(() => setAuthChecking(false));
+  }, []);
+
+  function handleLogout() {
+    localStorage.removeItem("gb_token");
+    localStorage.removeItem("gb_user");
+    setCurrentUser(null);
+  }
+
+  // 等待 token 验证完成前显示空白（避免闪烁）
+  if (authChecking) return null;
+
+  // 未登录 → 显示登录页
+  if (!currentUser) {
+    return <LoginPage onLogin={(user) => setCurrentUser(user as UserInfo)} />;
+  }
+
+  return <AppShell currentUser={currentUser} onLogout={handleLogout} />;
+}
+
+function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: () => void }) {
   // useLocation 获取当前 URL 信息，用于确定菜单选中状态
   const location = useLocation();
   // theme.useToken 获取 Ant Design 主题颜色变量，让各部分颜色跟随主题自动变化
   const { token } = theme.useToken();
   // 计算当前应该高亮哪个菜单项
   const selected = menuSelectedKeys(location);
+
+  // ── 首次访问免责声明 Modal ─────────────────────────────────
+  // localStorage 里存了标志位时说明用户已阅读过，不再弹窗
+  const [disclaimerOpen, setDisclaimerOpen] = useState(
+    () => localStorage.getItem("goldbrick_disclaimer_read") !== "1",
+  );
+  const [disclaimerChecked, setDisclaimerChecked] = useState(false);
+
+  /** 用户勾选「已阅读」并点击确认后，记录标志位并关闭弹窗 */
+  function handleDisclaimerOk() {
+    localStorage.setItem("goldbrick_disclaimer_read", "1");
+    setDisclaimerOpen(false);
+  }
 
   return (
     // Layout 是整页布局容器，minHeight: "100vh" 确保页面至少占满整个屏幕高度
@@ -117,6 +180,7 @@ export default function App() {
               label: "数据看板",
               children: [
                 { key: "m-replay",    label: <Link to="/replay">股票复盘</Link> },
+                { key: "m-watchlist", label: <Link to="/watchlist">自选股池</Link> },
                 { key: "m-dav",       label: <Link to="/dav">大V看板</Link> },
                 { key: "m-stock-list", label: <Link to="/stock-list">个股列表</Link> },
                 { key: "m-kline",     label: <Link to="/">K 线</Link> },
@@ -140,6 +204,27 @@ export default function App() {
             },
           ]}
         />
+
+        {/* 当前用户 + 登出按钮 */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: 16, flexShrink: 0 }}>
+          <Text style={{ fontSize: 13, color: token.colorTextSecondary }}>
+            {currentUser.username}{currentUser.is_admin ? "（管理员）" : ""}
+          </Text>
+          <button
+            onClick={onLogout}
+            style={{
+              background: "none",
+              border: `1px solid ${token.colorBorderSecondary}`,
+              borderRadius: 4,
+              color: token.colorTextSecondary,
+              cursor: "pointer",
+              fontSize: 12,
+              padding: "2px 10px",
+            }}
+          >
+            退出
+          </button>
+        </div>
       </Header>
 
       {/* ── 页面内容区域 ─────────────────────────────────────── */}
@@ -163,6 +248,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<KlinePage />} />
             <Route path="/replay" element={<ReplayPage />} />
+            <Route path="/watchlist" element={<WatchlistPage />} />
             <Route path="/dav" element={<DavPage />} />
             <Route path="/stock-list" element={<StockListPage />} />
             {/* 旧路径重定向，防止书签失效 */}
@@ -175,10 +261,7 @@ export default function App() {
             <Route path="/sentiment" element={<SentimentPage />} />
             {/* 回测功能 */}
             <Route path="/backtest" element={<BacktestPage />} />
-            <Route
-              path="/backtest/history"
-              element={<PrdPlaceholderPage title="回测记录" prdRef="V0.0.2 · 回测记录" />}
-            />
+            <Route path="/backtest/history" element={<BacktestHistoryPage />} />
             {/* 兜底：任何未知 URL 都跳回首页 */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -203,6 +286,57 @@ export default function App() {
           历史数据不代表未来收益，股市有风险，请独立判断。
         </Text>
       </Footer>
+
+      {/* ── 首次访问免责声明弹窗 ──────────────────────────────── */}
+      {/*
+        closable=false + maskClosable=false：强制用户必须勾选并点击确认才能关闭，
+        不允许点击遮罩或按 ESC 绕过（合规要求）。
+      */}
+      <Modal
+        title="使用须知 · 免责声明"
+        open={disclaimerOpen}
+        closable={false}
+        maskClosable={false}
+        keyboard={false}
+        okText="确认，开始使用"
+        okButtonProps={{ disabled: !disclaimerChecked }}
+        cancelButtonProps={{ style: { display: "none" } }}
+        onOk={handleDisclaimerOk}
+        width={540}
+      >
+        <div style={{ fontSize: 14, lineHeight: 1.8, color: "#d9d9d9" }}>
+          <p style={{ marginBottom: 12 }}>
+            <strong>GoldBrick</strong> 是一款个人使用的股票数据工具，提供以下服务：
+          </p>
+          <ul style={{ paddingLeft: 20, marginBottom: 16 }}>
+            <li>行情数据查询（K 线、换手率、涨跌幅等）</li>
+            <li>基于自定义指标的条件选股</li>
+            <li>历史数据回测（模拟盈亏，不含实盘执行）</li>
+            <li>大V看板（辅助参考，非推荐依据）</li>
+          </ul>
+          <div
+            style={{
+              background: "rgba(255, 77, 79, 0.08)",
+              border: "1px solid rgba(255, 77, 79, 0.3)",
+              borderRadius: 6,
+              padding: "10px 14px",
+              marginBottom: 16,
+            }}
+          >
+            <Text style={{ color: "#ff7875", fontSize: 13 }}>
+              ⚠ 本工具所有内容均为客观数据呈现，<strong>不构成任何投资建议</strong>。
+              历史回测结果不代表未来实际收益。股市存在亏损风险，请根据自身情况独立判断，
+              盈亏自负，与本工具无关。
+            </Text>
+          </div>
+          <Checkbox
+            checked={disclaimerChecked}
+            onChange={(e) => setDisclaimerChecked(e.target.checked)}
+          >
+            我已阅读并理解以上声明，不会将本工具内容作为投资依据
+          </Checkbox>
+        </div>
+      </Modal>
     </Layout>
   );
 }

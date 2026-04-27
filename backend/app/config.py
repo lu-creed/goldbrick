@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # 日志目录（相对 backend 工作目录；程序会在其下创建 sync/ 子目录写同步日志）
     log_dir: str = "logs"
 
+    # JWT 鉴权配置
+    jwt_secret_key: str = "change-me-in-production"  # 生产环境请通过 .env 覆盖
+    jwt_expire_days: int = 7                          # Token 有效天数
+
+    # 初始管理员账号（首次启动时自动创建，若 .env 未配置则使用默认值）
+    admin_username: str = "admin"
+    admin_password: str = "admin123"
+
 
 def get_backend_root() -> Path:
     """返回 backend/ 目录的绝对路径（即包含 app 包的上一级目录）。

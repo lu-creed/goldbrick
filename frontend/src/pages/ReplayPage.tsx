@@ -63,6 +63,14 @@ export default function ReplayPage() {
   // bucketChart：保存 ECharts 图表实例，避免重复初始化
   const bucketChart = useRef<echarts.ECharts | null>(null);
 
+  // scatterRef / scatterChart：换手率-涨跌幅散点图
+  const scatterRef   = useRef<HTMLDivElement>(null);
+  const scatterChart = useRef<echarts.ECharts | null>(null);
+  // navigateRef：把 navigate 存入 ref，让 ECharts click 回调能用到最新的函数引用
+  // （ECharts 事件回调是在 setOption 时注册的闭包，不能直接依赖 React hook）
+  const navigateRef = useRef(navigate);
+  useEffect(() => { navigateRef.current = navigate; }, [navigate]);
+
   // loading：是否正在请求数据（控制骨架屏显示）
   const [loading, setLoading] = useState(false);
   // data：从后端获取的复盘数据（null 表示尚未加载完成）
@@ -79,7 +87,7 @@ export default function ReplayPage() {
     try {
       // list_limit: 400 表示最多返回 400 只股票的明细（用于分布统计）
       const out = await fetchReplayDaily(
-        d ? { trade_date: d, list_limit: 400 } : { list_limit: 400 },
+        d ? { trade_date: d, list_limit: 2000 } : { list_limit: 2000 },
       );
       setData(out);
       // 如果用户还没有手动选日期，则自动把日期选择器定位到后端返回的交易日
@@ -149,6 +157,117 @@ export default function ReplayPage() {
     ro.observe(bucketRef.current);
     return () => ro.disconnect(); // 组件销毁时取消监听，防止内存泄漏
   }, [data?.buckets]);
+
+  /**
+   * 绘制换手率-涨跌幅散点图
+   * X 轴：换手率（%），Y 轴：涨跌幅（%），颜色按涨跌着色
+   * 每次 data.stocks 变化（切换日期）重新绘制
+   */
+  useEffect(() => {
+    if (!data?.stocks?.length || !scatterRef.current) return;
+    if (!scatterChart.current) scatterChart.current = echarts.init(scatterRef.current);
+
+    // 过滤掉没有换手率的股票（科创板/北交所等少量股票可能缺失）
+    const stocks = data.stocks.filter((s) => s.turnover_rate != null);
+
+    // 按涨跌拆分三组数据，分组后可以在图例中分别显示并着色
+    const riseData = stocks
+      .filter((s) => s.pct_change > 0)
+      .map((s) => ({ value: [s.turnover_rate, s.pct_change], name: `${s.ts_code} ${s.name ?? ""}` }));
+    const fallData = stocks
+      .filter((s) => s.pct_change < 0)
+      .map((s) => ({ value: [s.turnover_rate, s.pct_change], name: `${s.ts_code} ${s.name ?? ""}` }));
+    const flatData = stocks
+      .filter((s) => s.pct_change === 0)
+      .map((s) => ({ value: [s.turnover_rate, s.pct_change], name: `${s.ts_code} ${s.name ?? ""}` }));
+
+    scatterChart.current.setOption({
+      ...ECHARTS_BASE_OPTION,
+      backgroundColor: "transparent",
+      legend: {
+        data: ["上涨", "下跌", "平盘"],
+        top: 8,
+        textStyle: { color: "#d9d9d9", fontSize: 12 },
+      },
+      grid: { left: 56, right: 20, top: 48, bottom: 56 },
+      tooltip: {
+        trigger: "item",
+        backgroundColor: "#1f1f1f",
+        borderColor: "#333",
+        textStyle: { color: "#e0e0e0", fontSize: 12 },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        formatter: (params: any) => {
+          const [turnover, pct] = params.value as [number, number];
+          const sign = pct > 0 ? "+" : "";
+          return `${params.name}<br/>换手率 ${turnover.toFixed(2)}%<br/>涨跌幅 ${sign}${pct.toFixed(2)}%<br/><span style="color:#8c8c8c;font-size:11px">点击查看 K 线</span>`;
+        },
+      },
+      xAxis: {
+        ...ECHARTS_BASE_OPTION.xAxis,
+        type: "value",
+        name: "换手率 %",
+        nameTextStyle: { color: "#8c8c8c", fontSize: 11 },
+        nameLocation: "middle",
+        nameGap: 28,
+        axisLabel: { color: "#8c8c8c", formatter: (v: number) => `${v}%` },
+        splitLine: { lineStyle: { color: "#1e1e1e" } },
+      },
+      yAxis: {
+        ...ECHARTS_BASE_OPTION.yAxis,
+        type: "value",
+        name: "涨跌幅 %",
+        nameTextStyle: { color: "#8c8c8c", fontSize: 11 },
+        nameLocation: "middle",
+        nameGap: 40,
+        axisLabel: { color: "#8c8c8c", formatter: (v: number) => `${v > 0 ? "+" : ""}${v}%` },
+        splitLine: { lineStyle: { color: "#1e1e1e" } },
+        // Y=0 基准线：区分涨跌的分界
+        markLine: {
+          silent: true,
+          symbol: ["none", "none"],
+          data: [{ yAxis: 0, lineStyle: { color: "#444", type: "dashed", width: 1 } }],
+        },
+      },
+      series: [
+        {
+          name: "上涨",
+          type: "scatter",
+          data: riseData,
+          symbolSize: 4,
+          itemStyle: { color: RISE_COLOR, opacity: 0.6 },
+        },
+        {
+          name: "下跌",
+          type: "scatter",
+          data: fallData,
+          symbolSize: 4,
+          itemStyle: { color: FALL_COLOR, opacity: 0.6 },
+        },
+        {
+          name: "平盘",
+          type: "scatter",
+          data: flatData,
+          symbolSize: 4,
+          itemStyle: { color: FLAT_COLOR, opacity: 0.6 },
+        },
+      ],
+    });
+
+    const ro = new ResizeObserver(() => scatterChart.current?.resize());
+    ro.observe(scatterRef.current);
+
+    // 点击散点：跳转到对应股票的 K 线页
+    // params.name 格式为 "000001.SZ 平安银行"，取第一段即 ts_code
+    const chart = scatterChart.current;
+    chart.off("click"); // 先解绑旧监听，防止切换日期后重复注册
+    chart.on("click", (params: { name?: string }) => {
+      if (!params.name) return;
+      const tsCode = params.name.split(" ")[0];
+      if (tsCode) navigateRef.current(`/?ts_code=${encodeURIComponent(tsCode)}`);
+    });
+
+    return () => ro.disconnect();
+  }, [data?.stocks]);
 
   /** 用户手动切换日期时触发，重新加载对应交易日数据 */
   const onDateChange = (v: Dayjs | null) => {
@@ -305,6 +424,32 @@ export default function ReplayPage() {
             ) : (
               /* bucketRef 指向的 div 就是 ECharts 的绘图容器 */
               <div ref={bucketRef} style={{ height: 320 }} />
+            )}
+          </Card>
+        </Col>
+      </Row>
+
+      {/* ── 换手率-涨跌幅散点图 ──────────────────────────────── */}
+      {/*
+        X 轴：换手率，Y 轴：涨跌幅，颜色按涨跌分组
+        高换手且上涨的点集中在右上角，反映主力资金流向。
+        Y=0 处有分隔虚线，帮助区分涨跌区域。
+      */}
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24}>
+          <Card
+            title="换手率 · 涨跌幅散点图"
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {data?.stocks?.filter((s) => s.turnover_rate != null).length ?? 0} 只（含换手率数据）
+              </Typography.Text>
+            }
+            style={{ borderRadius: 12 }}
+          >
+            {loading ? (
+              <Skeleton active paragraph={{ rows: 8 }} />
+            ) : (
+              <div ref={scatterRef} style={{ height: 400 }} />
             )}
           </Card>
         </Col>

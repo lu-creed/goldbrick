@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Indicator, UserIndicator
+from app.auth import get_current_user
 from app.schemas import (
     BuiltinCatalogItem,
     CustomIndicatorVariableNamesOut,
@@ -118,7 +119,7 @@ def _ensure_trial_ok_legacy(db: Session, expr: str, trial_ts: str) -> None:
 
 
 @router.get("/builtin-catalog", response_model=List[BuiltinCatalogItem])
-def builtin_catalog_for_editor(db: Session = Depends(get_db)):
+def builtin_catalog_for_editor(_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """获取内置指标目录（供 DSL 编辑器中「引用内置指标」选择器使用）。
 
     返回所有内置指标及其子线列表，格式：
@@ -138,7 +139,7 @@ def builtin_catalog_for_editor(db: Session = Depends(get_db)):
 
 
 @router.get("/variable-names", response_model=CustomIndicatorVariableNamesOut)
-def list_variable_names(db: Session = Depends(get_db)):
+def list_variable_names(_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """获取旧版 expr 指标可用的变量名白名单（如 MA5、MA20、DIF、close 等）。
 
     用于前端旧版 expr 编辑器的自动补全提示，以及后端校验 expr 时的白名单判断。
@@ -148,14 +149,17 @@ def list_variable_names(db: Session = Depends(get_db)):
 
 
 @router.get("", response_model=List[UserIndicatorOut])
-def list_custom_indicators(db: Session = Depends(get_db)):
-    """获取用户创建的所有自定义指标（按 ID 升序，创建越早越靠前）。"""
-    rows = db.query(UserIndicator).order_by(UserIndicator.id.asc()).all()
+def list_custom_indicators(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """获取当前用户的自定义指标 + 系统预置模板（user_id IS NULL），按 ID 升序。"""
+    from sqlalchemy import or_
+    rows = db.query(UserIndicator).filter(
+        or_(UserIndicator.user_id.is_(None), UserIndicator.user_id == current_user.id)
+    ).order_by(UserIndicator.id.asc()).all()
     return [_user_indicator_to_out(r) for r in rows]
 
 
 @router.post("/validate-definition", response_model=UserIndicatorValidateOut)
-def validate_definition_draft(body: UserIndicatorValidateDefinitionRequest, db: Session = Depends(get_db)):
+def validate_definition_draft(body: UserIndicatorValidateDefinitionRequest, _user=Depends(get_current_user), db: Session = Depends(get_db)):
     """实时校验 DSL 指标定义（保存前预检）。
 
     两步校验：
@@ -196,7 +200,7 @@ def validate_definition_draft(body: UserIndicatorValidateDefinitionRequest, db: 
 
 
 @router.post("/validate-expr", response_model=UserIndicatorValidateOut)
-def validate_expr_draft(body: UserIndicatorValidateExprRequest, db: Session = Depends(get_db)):
+def validate_expr_draft(body: UserIndicatorValidateExprRequest, _user=Depends(get_current_user), db: Session = Depends(get_db)):
     """实时校验旧版 expr 单行表达式（保存前预检）。
 
     两步校验：
@@ -229,7 +233,7 @@ def validate_expr_draft(body: UserIndicatorValidateExprRequest, db: Session = De
 
 
 @router.post("", response_model=UserIndicatorOut)
-def create_custom_indicator(body: UserIndicatorCreate, db: Session = Depends(get_db)):
+def create_custom_indicator(body: UserIndicatorCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """创建新的自定义指标。
 
     校验流程（DSL 类型）：
@@ -246,7 +250,10 @@ def create_custom_indicator(body: UserIndicatorCreate, db: Session = Depends(get
         code = assert_code_ok(db, body.code)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    dup = db.query(UserIndicator).filter(UserIndicator.code == code).one_or_none()
+    dup = db.query(UserIndicator).filter(
+        UserIndicator.user_id == current_user.id,
+        UserIndicator.code == code,
+    ).one_or_none()
     if dup:
         raise HTTPException(status_code=400, detail="code 已存在")
 
@@ -276,6 +283,7 @@ def create_custom_indicator(body: UserIndicatorCreate, db: Session = Depends(get
         expr_stored = ex
 
     row = UserIndicator(
+        user_id=current_user.id,
         code=code,
         display_name=body.display_name.strip(),
         description=body.description,
@@ -289,24 +297,25 @@ def create_custom_indicator(body: UserIndicatorCreate, db: Session = Depends(get
 
 
 @router.get("/{custom_id}", response_model=UserIndicatorOut)
-def get_custom_indicator(custom_id: int, db: Session = Depends(get_db)):
-    """按 ID 获取单个自定义指标的完整定义（含 definition JSON 或 expr）。"""
-    row = db.query(UserIndicator).filter(UserIndicator.id == custom_id).one_or_none()
+def get_custom_indicator(custom_id: int, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """按 ID 获取单个自定义指标的完整定义（模板或当前用户的指标）。"""
+    from sqlalchemy import or_
+    row = db.query(UserIndicator).filter(
+        UserIndicator.id == custom_id,
+        or_(UserIndicator.user_id.is_(None), UserIndicator.user_id == current_user.id),
+    ).one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="自定义指标不存在")
     return _user_indicator_to_out(row)
 
 
 @router.patch("/{custom_id}", response_model=UserIndicatorOut)
-def patch_custom_indicator(custom_id: int, body: UserIndicatorPatch, db: Session = Depends(get_db)):
-    """修改现有自定义指标（支持只修改部分字段）。
-
-    可修改的字段：display_name、description、definition（DSL）或 expr（旧版）。
-    修改 definition/expr 时会重新校验和试算（trial_ts_code 默认为 600000.SH 浦发银行）。
-
-    注意：不允许修改 code（唯一标识符，修改会破坏已保存的选股/回测配置）。
-    """
-    row = db.query(UserIndicator).filter(UserIndicator.id == custom_id).one_or_none()
+def patch_custom_indicator(custom_id: int, body: UserIndicatorPatch, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """修改现有自定义指标（仅限自己创建的指标，不可修改系统模板）。"""
+    row = db.query(UserIndicator).filter(
+        UserIndicator.id == custom_id,
+        UserIndicator.user_id == current_user.id,
+    ).one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="自定义指标不存在")
     trial_ts = (body.trial_ts_code or "600000.SH").strip()
@@ -343,12 +352,12 @@ def patch_custom_indicator(custom_id: int, body: UserIndicatorPatch, db: Session
 
 
 @router.delete("/{custom_id}")
-def delete_custom_indicator(custom_id: int, db: Session = Depends(get_db)):
-    """删除自定义指标（物理删除，不可恢复）。
-
-    注意：删除后，依赖此指标的选股配置会失效（因为 user_indicator_id 指向的记录已不存在）。
-    """
-    row = db.query(UserIndicator).filter(UserIndicator.id == custom_id).one_or_none()
+def delete_custom_indicator(custom_id: int, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """删除自定义指标（仅限自己创建的指标，系统模板不可删除）。"""
+    row = db.query(UserIndicator).filter(
+        UserIndicator.id == custom_id,
+        UserIndicator.user_id == current_user.id,
+    ).one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="自定义指标不存在")
     db.delete(row)
@@ -357,13 +366,13 @@ def delete_custom_indicator(custom_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{custom_id}/validate", response_model=UserIndicatorValidateOut)
-def validate_custom_indicator(custom_id: int, body: UserIndicatorValidateRequest, db: Session = Depends(get_db)):
-    """对已保存的自定义指标进行试算（可更换试算股票和日期，用于验证指标在不同标的上的表现）。
-
-    适用场景：用户已保存指标后，想看它在另一只股票上的值是否合理。
-    与 /validate-definition 的区别：此接口从数据库读取已保存的定义，而不是从请求体读取草稿。
-    """
-    row = db.query(UserIndicator).filter(UserIndicator.id == custom_id).one_or_none()
+def validate_custom_indicator(custom_id: int, body: UserIndicatorValidateRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """对已保存的自定义指标进行试算（模板或当前用户的指标均可）。"""
+    from sqlalchemy import or_
+    row = db.query(UserIndicator).filter(
+        UserIndicator.id == custom_id,
+        or_(UserIndicator.user_id.is_(None), UserIndicator.user_id == current_user.id),
+    ).one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="自定义指标不存在")
     out = _user_indicator_to_out(row)

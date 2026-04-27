@@ -496,6 +496,33 @@ class ScreeningRunOut(BaseModel):
     matched: int     # 命中条件的股票数
     note: Optional[str] = None   # 后端警告（如数据不完整时的提示）
     items: list[ScreeningStockRow]
+    history_id: Optional[int] = None   # 本次结果自动保存后的历史记录 ID
+
+
+class ScreeningHistoryItem(BaseModel):
+    """选股历史列表中的一条记录（用于列表页展示）。
+
+    只包含摘要信息，不包含 result_json（避免传输大量数据）。
+    restore_params：前端可用这些参数直接还原选股条件。
+    """
+    id: int
+    created_at: datetime                 # 执行时间
+    trade_date: str                      # 选股交易日
+    indicator_name: str                  # 指标展示名
+    indicator_code: str                  # 指标英文代码
+    user_indicator_id: Optional[int]     # 指标 ID（指标删除后为 None）
+    sub_key: Optional[str]               # 子线 key
+    compare_op: str                      # 比较运算符
+    threshold: float                     # 比较阈值
+    scanned: int                         # 扫描数量
+    matched: int                         # 命中数量
+
+    model_config = {"from_attributes": True}
+
+
+class ScreeningHistoryDetail(ScreeningHistoryItem):
+    """选股历史详情：在摘要基础上补充命中股票列表。"""
+    items: list[ScreeningStockRow] = []  # 从 result_json 反序列化而来
 
 
 # ---- K 线副图：自定义指标子线序列 ----
@@ -676,3 +703,43 @@ class SentimentTrendOut(BaseModel):
     days: int
     points: list[SentimentTrendPoint]
     latest_date: Optional[str] = None
+
+
+# ---- 回测历史记录 ----
+
+class BacktestRecordItem(BaseModel):
+    """回测历史列表中的一条记录（摘要，不含完整 result_json）。
+
+    冗余字段（indicator_name 等）直接展示，无需再查 user_indicators 表。
+    """
+    id: int
+    created_at: datetime
+    start_date: str
+    end_date: str
+    indicator_name: str                  # 指标展示名（冗余）
+    indicator_code: str                  # 指标英文代码（冗余）
+    user_indicator_id: Optional[int]     # 指标 ID（指标删除后为 None）
+    sub_key: Optional[str]
+    buy_op: str
+    buy_threshold: float
+    sell_op: str
+    sell_threshold: float
+    initial_capital: float
+    max_positions: int
+    # 核心绩效指标（列表页直接展示）
+    total_return_pct: float
+    max_drawdown_pct: float
+    total_trades: int
+    win_rate: Optional[float]
+    annualized_return: Optional[float]
+    sharpe_ratio: Optional[float]
+
+    model_config = {"from_attributes": True}
+
+
+class BacktestRecordDetail(BacktestRecordItem):
+    """回测历史详情：在摘要基础上补充完整回测结果（用于详情页还原图表和交易记录）。
+
+    result 字段从 result_json 反序列化得到，与 BacktestRunOut 结构完全一致。
+    """
+    result: Optional["BacktestRunOut"] = None  # 完整结果，None 表示 JSON 解析失败

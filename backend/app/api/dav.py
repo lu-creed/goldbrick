@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import DavStockWatch, InstrumentMeta
+from app.auth import get_current_user
 
 router = APIRouter(prefix="/dav", tags=["dav"])
 
@@ -119,20 +120,24 @@ def search_stocks(q: str = Query("", max_length=20), db: Session = Depends(get_d
 
 
 @router.get("/stocks", response_model=List[DavStockOut])
-def list_stocks(db: Session = Depends(get_db)):
-    """返回全部看板股票，含最新价与预期股息率（按分类+代码排序）。"""
-    rows = db.query(DavStockWatch).order_by(
-        DavStockWatch.dav_class.nullslast(), DavStockWatch.ts_code
-    ).all()
+def list_stocks(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """返回当前用户看板全部股票，含最新价与预期股息率。"""
+    rows = db.query(DavStockWatch).filter(
+        DavStockWatch.user_id == current_user.id,
+    ).order_by(DavStockWatch.dav_class.nullslast(), DavStockWatch.ts_code).all()
     return [_to_out(r, db) for r in rows]
 
 
 @router.post("/stocks", response_model=DavStockOut, status_code=201)
-def add_stock(body: DavStockIn, db: Session = Depends(get_db)):
-    """添加一只股票到大V看板，同一代码不可重复添加。"""
-    if db.query(DavStockWatch).filter(DavStockWatch.ts_code == body.ts_code).first():
+def add_stock(body: DavStockIn, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """添加一只股票到大V看板，同一用户同一代码不可重复添加。"""
+    if db.query(DavStockWatch).filter(
+        DavStockWatch.user_id == current_user.id,
+        DavStockWatch.ts_code == body.ts_code,
+    ).first():
         raise HTTPException(status_code=409, detail=f"{body.ts_code} 已在看板中")
     row = DavStockWatch(
+        user_id=current_user.id,
         ts_code=body.ts_code,
         dav_class=body.dav_class,
         manual_payout_ratio=body.manual_payout_ratio,
@@ -146,9 +151,12 @@ def add_stock(body: DavStockIn, db: Session = Depends(get_db)):
 
 
 @router.patch("/stocks/{ts_code}", response_model=DavStockOut)
-def update_stock(ts_code: str, body: DavStockPatch, db: Session = Depends(get_db)):
+def update_stock(ts_code: str, body: DavStockPatch, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """更新分类、派息率、EPS 或备注，只传需要修改的字段。"""
-    row = db.query(DavStockWatch).filter(DavStockWatch.ts_code == ts_code).first()
+    row = db.query(DavStockWatch).filter(
+        DavStockWatch.user_id == current_user.id,
+        DavStockWatch.ts_code == ts_code,
+    ).first()
     if not row:
         raise HTTPException(status_code=404, detail="未找到该股票")
     if body.dav_class is not None:
@@ -165,9 +173,12 @@ def update_stock(ts_code: str, body: DavStockPatch, db: Session = Depends(get_db
 
 
 @router.delete("/stocks/{ts_code}", status_code=204)
-def remove_stock(ts_code: str, db: Session = Depends(get_db)):
+def remove_stock(ts_code: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """从看板移除一只股票。"""
-    row = db.query(DavStockWatch).filter(DavStockWatch.ts_code == ts_code).first()
+    row = db.query(DavStockWatch).filter(
+        DavStockWatch.user_id == current_user.id,
+        DavStockWatch.ts_code == ts_code,
+    ).first()
     if not row:
         raise HTTPException(status_code=404, detail="未找到该股票")
     db.delete(row)

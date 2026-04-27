@@ -26,6 +26,16 @@ from app.services.runtime_tokens import get_tushare_token
 
 log = logging.getLogger(__name__)
 
+_TUSHARE_QUOTA_KEYWORDS = (
+    "权限", "积分", "每分钟最多", "每天最多", "超出限制", "quota", "limit exceeded", "permission",
+)
+
+
+def _is_tushare_quota_error(ex: Exception) -> bool:
+    """判断异常是否为 Tushare 积分/权限/频率限制错误（而非网络中断或数据问题）。"""
+    msg = str(ex).lower()
+    return any(k.lower() in msg for k in _TUSHARE_QUOTA_KEYWORDS)
+
 
 def _fmt_d(d: date) -> str:
     """把 date 对象转换为 Tushare 所需的 8 位字符串格式，如 2024-01-15 → '20240115'。"""
@@ -297,48 +307,62 @@ def fetch_and_upsert_symbol(
     if _instrument_is_index(db, code):
         return _fetch_and_upsert_index_daily(db, symbol, pro, code, s, e, w)
 
-    # ---- 个股：拉三份数据 ----
+    # ---- 个股：拉三份数据（Tushare 优先，积分/权限不足时自动切换 AKShare）----
     w(f"fetch daily {code} {s}..{e}")
-    df_daily = pro.daily(ts_code=code, start_date=s, end_date=e)
-    if df_daily is None or df_daily.empty:
-        w(f"no daily rows for {code}")
-        return 0, False
-
-    # 换手率：Tushare daily_basic 接口，仅取 turnover_rate 字段减少流量
-    df_basic = pro.daily_basic(ts_code=code, start_date=s, end_date=e, fields="ts_code,trade_date,turnover_rate")
-
-    # 复权因子：若失败（如权限不足、接口超时）则记录失败标志，不中断本只股票的 K 线写入
-    adj_fetch_failed = False
-    try:
-        df_adj = pro.adj_factor(ts_code=code, start_date=s, end_date=e)
-    except Exception as ex:  # noqa: BLE001
-        w(f"[ADJ_FAIL] adj_factor fetch failed for {code}: {ex}")
-        df_adj = None
-        adj_fetch_failed = True
-
-    # 构建 {日期字符串: 换手率} 映射（用于后续 O(1) 查找）
+    df_daily = None
     turn_map: dict[str, float] = {}
-    if df_basic is not None and not df_basic.empty:
-        for _, row in df_basic.iterrows():
-            td = str(row["trade_date"])
-            if row.get("turnover_rate") is not None:
-                try:
-                    turn_map[td] = float(row["turnover_rate"])
-                except (TypeError, ValueError):
-                    pass
-
-    # 构建 {日期字符串: 复权因子} 映射
     adj_map: dict[str, float] = {}
-    if df_adj is not None and not df_adj.empty:
-        for _, row in df_adj.iterrows():
-            td = str(row.get("trade_date") or "")
-            af = row.get("adj_factor")
-            if not td or af is None:
-                continue
-            try:
-                adj_map[td] = float(af)
-            except (TypeError, ValueError):
-                continue
+    adj_fetch_failed = False
+    data_source = "tushare"
+
+    try:
+        df_daily = pro.daily(ts_code=code, start_date=s, end_date=e)
+    except Exception as ex:  # noqa: BLE001
+        if _is_tushare_quota_error(ex):
+            w(f"[TUSHARE_QUOTA] {code}: {ex}")
+        else:
+            raise
+
+    if df_daily is None or df_daily.empty:
+        # Tushare 无数据（配额报错被吞 or 返回空）→ 尝试 AKShare
+        from app.services.akshare_ingestion import fetch_stock_bars_akshare  # noqa: PLC0415
+        w(f"[AKSHARE_FALLBACK] trying AKShare for {code}")
+        df_daily, turn_map, adj_map = fetch_stock_bars_akshare(code, s, e)
+        data_source = "akshare"
+        if not adj_map:
+            adj_fetch_failed = True
+        if df_daily is None or df_daily.empty:
+            w(f"no daily rows for {code} (Tushare and AKShare both empty)")
+            return 0, False
+    else:
+        # Tushare 成功：补拉换手率和复权因子
+        df_basic = pro.daily_basic(ts_code=code, start_date=s, end_date=e, fields="ts_code,trade_date,turnover_rate")
+        try:
+            df_adj = pro.adj_factor(ts_code=code, start_date=s, end_date=e)
+        except Exception as ex:  # noqa: BLE001
+            w(f"[ADJ_FAIL] adj_factor fetch failed for {code}: {ex}")
+            df_adj = None
+            adj_fetch_failed = True
+
+        if df_basic is not None and not df_basic.empty:
+            for _, row in df_basic.iterrows():
+                td = str(row["trade_date"])
+                if row.get("turnover_rate") is not None:
+                    try:
+                        turn_map[td] = float(row["turnover_rate"])
+                    except (TypeError, ValueError):
+                        pass
+
+        if df_adj is not None and not df_adj.empty:
+            for _, row in df_adj.iterrows():
+                td = str(row.get("trade_date") or "")
+                af = row.get("adj_factor")
+                if not td or af is None:
+                    continue
+                try:
+                    adj_map[td] = float(af)
+                except (TypeError, ValueError):
+                    continue
 
     # ---- 写入 bars_daily ----
     count = 0
@@ -372,7 +396,7 @@ def fetch_and_upsert_symbol(
             volume=vol,
             amount=Decimal(str(amt)),
             turnover_rate=Decimal(str(turn)) if turn is not None else None,
-            source="tushare",
+            source=data_source,
         )
         if existing:
             # 覆盖更新（re-sync 时使用最新数据覆盖旧数据）
@@ -405,14 +429,14 @@ def fetch_and_upsert_symbol(
             )
             if existing_adj:
                 existing_adj.adj_factor = Decimal(str(af))
-                existing_adj.source = "tushare"
+                existing_adj.source = data_source
             else:
                 db.add(
                     AdjFactorDaily(
                         symbol_id=symbol.id,
                         trade_date=adj_date,
                         adj_factor=Decimal(str(af)),
-                        source="tushare",
+                        source=data_source,
                     )
                 )
             adj_count += 1

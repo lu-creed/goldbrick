@@ -194,6 +194,30 @@ def _validate_formula_tree(
         _validate_formula_tree(d.get("left"), param_names, sub_keys, depth=depth + 1)
         _validate_formula_tree(d.get("right"), param_names, sub_keys, depth=depth + 1)
         return
+    if op == "pct_chg":
+        fld = d.get("field")
+        if fld not in INTRINSIC_FIELDS:
+            raise ValueError("pct_chg.field 须为固有行情字段")
+        npar = d.get("n_param")
+        if not isinstance(npar, str) or npar not in param_names:
+            raise ValueError("pct_chg.n_param 须为本指标已声明的参数名")
+        return
+    if op in ("cross_above", "cross_below"):
+        _validate_formula_tree(d.get("fast"), param_names, sub_keys, depth=depth + 1)
+        _validate_formula_tree(d.get("slow"), param_names, sub_keys, depth=depth + 1)
+        return
+    if op == "count_if":
+        _validate_formula_tree(d.get("cond"), param_names, sub_keys, depth=depth + 1)
+        npar = d.get("n_param")
+        if not isinstance(npar, str) or npar not in param_names:
+            raise ValueError("count_if.n_param 须为本指标已声明的参数名")
+        return
+    if op in ("highest", "lowest"):
+        _validate_formula_tree(d.get("x"), param_names, sub_keys, depth=depth + 1)
+        npar = d.get("n_param")
+        if not isinstance(npar, str) or npar not in param_names:
+            raise ValueError(f"{op}.n_param 须为本指标已声明的参数名")
+        return
     if op == "ref_builtin":
         # 引用内置指标子线：子线名非空，取数方式合法
         sub_name = d.get("sub_name")
@@ -234,6 +258,16 @@ def _collect_sibling_deps(node: Any, out: set[str]) -> None:
     if op in ("add", "sub", "mul", "div"):
         _collect_sibling_deps(d.get("left"), out)
         _collect_sibling_deps(d.get("right"), out)
+        return
+    if op in ("cross_above", "cross_below"):
+        _collect_sibling_deps(d.get("fast"), out)
+        _collect_sibling_deps(d.get("slow"), out)
+        return
+    if op == "count_if":
+        _collect_sibling_deps(d.get("cond"), out)
+        return
+    if op in ("highest", "lowest"):
+        _collect_sibling_deps(d.get("x"), out)
         return
     if op == "ref_builtin":
         f = d.get("fetch")
@@ -347,6 +381,13 @@ def parse_and_validate_definition(db: Session, raw: Any) -> UserIndicatorDefinit
             if op in ("add", "sub", "mul", "div"):
                 _check_builtin_refs(d.get("left"))
                 _check_builtin_refs(d.get("right"))
+            if op in ("cross_above", "cross_below"):
+                _check_builtin_refs(d.get("fast"))
+                _check_builtin_refs(d.get("slow"))
+            if op == "count_if":
+                _check_builtin_refs(d.get("cond"))
+            if op in ("highest", "lowest"):
+                _check_builtin_refs(d.get("x"))
             if op == "ref_builtin":
                 f = d.get("fetch")
                 if isinstance(f, dict) and f.get("range_agg") == "std" and f.get("std_baseline"):

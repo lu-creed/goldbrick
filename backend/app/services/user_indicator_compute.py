@@ -115,6 +115,13 @@ def _topo_order(sub_keys: set[str], subs: list[dict[str, Any]]) -> list[str]:
         elif op in ("add", "sub", "mul", "div"):
             collect_deps(node.get("left"), out)
             collect_deps(node.get("right"), out)
+        elif op in ("cross_above", "cross_below"):
+            collect_deps(node.get("fast"), out)
+            collect_deps(node.get("slow"), out)
+        elif op == "count_if":
+            collect_deps(node.get("cond"), out)
+        elif op in ("highest", "lowest"):
+            collect_deps(node.get("x"), out)
         elif op == "ref_builtin":
             f = node.get("fetch")
             if isinstance(f, dict) and f.get("range_agg") == "std" and f.get("std_baseline"):
@@ -317,6 +324,73 @@ def _eval_formula(
             _append_diag(diag, "DIV_ZERO", bar_index=i, trade_date=_td_str(bars, i), sub_key=eval_sub_key, detail="除数为 0")
             return None
         return a / b
+
+    if op == "pct_chg":
+        field = node.get("field")
+        npar = node.get("n_param")
+        if not isinstance(field, str) or not isinstance(npar, str):
+            return None
+        n_back = _param_int(param_vals, npar)
+        j = i - n_back
+        if j < 0:
+            _append_diag(diag, "WINDOW_SHORT", bar_index=i, trade_date=_td_str(bars, i), sub_key=eval_sub_key, detail=f"pct_chg 需要前 {n_back} 周期，序号不足")
+            return None
+        cur = _intrinsic_bar(bars[i], field)
+        prev = _intrinsic_bar(bars[j], field)
+        if cur is None or prev is None or prev == 0:
+            return None
+        return (cur - prev) / prev * 100.0
+
+    if op in ("cross_above", "cross_below"):
+        if i < 1:
+            return None
+        fast_node = node.get("fast")
+        slow_node = node.get("slow")
+        f_cur = _eval_formula(fast_node, i=i, bars=bars, builtin_rows=builtin_rows, sub_values=sub_values, param_vals=param_vals, depth=depth + 1, diag=diag, eval_sub_key=eval_sub_key)
+        s_cur = _eval_formula(slow_node, i=i, bars=bars, builtin_rows=builtin_rows, sub_values=sub_values, param_vals=param_vals, depth=depth + 1, diag=diag, eval_sub_key=eval_sub_key)
+        f_prev = _eval_formula(fast_node, i=i - 1, bars=bars, builtin_rows=builtin_rows, sub_values=sub_values, param_vals=param_vals, depth=depth + 1, diag=diag, eval_sub_key=eval_sub_key)
+        s_prev = _eval_formula(slow_node, i=i - 1, bars=bars, builtin_rows=builtin_rows, sub_values=sub_values, param_vals=param_vals, depth=depth + 1, diag=diag, eval_sub_key=eval_sub_key)
+        if any(v is None for v in (f_cur, s_cur, f_prev, s_prev)):
+            return None
+        if op == "cross_above":
+            return 1.0 if (f_cur > s_cur and f_prev <= s_prev) else 0.0
+        return 1.0 if (f_cur < s_cur and f_prev >= s_prev) else 0.0
+
+    if op == "count_if":
+        cond_node = node.get("cond")
+        npar = node.get("n_param")
+        if not isinstance(npar, str):
+            return None
+        n_win = _param_int(param_vals, npar)
+        start_idx = i - n_win + 1
+        if start_idx < 0:
+            _append_diag(diag, "WINDOW_SHORT", bar_index=i, trade_date=_td_str(bars, i), sub_key=eval_sub_key, detail=f"count_if 需要 {n_win} 根 K 线，当前不足")
+            return None
+        cnt = 0
+        for j in range(start_idx, i + 1):
+            v = _eval_formula(cond_node, i=j, bars=bars, builtin_rows=builtin_rows, sub_values=sub_values, param_vals=param_vals, depth=depth + 1, diag=diag, eval_sub_key=eval_sub_key)
+            if v is not None and v != 0:
+                cnt += 1
+        return float(cnt)
+
+    if op in ("highest", "lowest"):
+        x_node = node.get("x")
+        npar = node.get("n_param")
+        if not isinstance(npar, str):
+            return None
+        n_win = _param_int(param_vals, npar)
+        start_idx = i - n_win + 1
+        if start_idx < 0:
+            _append_diag(diag, "WINDOW_SHORT", bar_index=i, trade_date=_td_str(bars, i), sub_key=eval_sub_key, detail=f"{op} 需要 {n_win} 根 K 线，当前不足")
+            return None
+        xs_win: list[float] = []
+        for j in range(start_idx, i + 1):
+            v = _eval_formula(x_node, i=j, bars=bars, builtin_rows=builtin_rows, sub_values=sub_values, param_vals=param_vals, depth=depth + 1, diag=diag, eval_sub_key=eval_sub_key)
+            if v is None:
+                _append_diag(diag, "MISSING_IN_WINDOW", bar_index=i, trade_date=_td_str(bars, i), sub_key=eval_sub_key, detail=f"窗口内 {_td_str(bars, j)} 取值为空")
+                return None
+            xs_win.append(v)
+        return max(xs_win) if op == "highest" else min(xs_win)
 
     # ---- 辅助闭包：方便 ref_builtin / ref_sibling 复用 ----
 
