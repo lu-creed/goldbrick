@@ -804,6 +804,10 @@ export type DailyUniverseFilterParams = {
   amount_max?: number;
   turnover_min?: number;
   turnover_max?: number;
+  pe_min?: number;
+  pe_max?: number;
+  pb_min?: number;
+  pb_max?: number;
 };
 
 /** 个股列表的单行数据（仅包含行情字段，不含同步状态） */
@@ -820,6 +824,9 @@ export type DailyUniverseRow = {
   amount: number;
   turnover_rate: number | null;
   pct_change: number | null;
+  pe_ttm: number | null;      // 动态市盈率（TTM），同步基本面后才有值
+  pb: number | null;          // 市净率，同步基本面后才有值
+  total_mv: number | null;    // 总市值（元），同步基本面后才有值
 };
 
 /** 个股列表接口的分页返回结构 */
@@ -1058,8 +1065,10 @@ export type DavStockOut = {
   name: string | null;
   dav_class: "A" | "B" | "C" | "D" | null;
   latest_price: number | null;
-  manual_payout_ratio: number | null;   // 近两年平均派息率（%）
-  manual_eps: number | null;            // 预测全年 EPS（元）
+  manual_payout_ratio: number | null;   // 近两年平均派息率（%），手填
+  manual_eps: number | null;            // 预测全年 EPS（元），手填
+  auto_payout_ratio: number | null;     // AKShare 自动填充的派息率（手填优先）
+  auto_eps: number | null;              // AKShare 自动填充的 EPS（手填优先）
   expected_yield: number | null;        // 预期股息率（%），三项数据均有时自动计算
   data_complete: boolean;               // true = 可自动计算预期股息率
   notes: string | null;                 // 纠正备注
@@ -1197,5 +1206,52 @@ export async function fetchRegistrationSetting(): Promise<{ allow_registration: 
 /** [管理员] 开关开放注册 */
 export async function toggleRegistration(allow: boolean): Promise<{ allow_registration: boolean }> {
   const { data } = await api.patch<{ allow_registration: boolean }>("/auth/settings/registration", { allow });
+  return data;
+}
+
+// ── GitHub 自动更新 ──────────────────────────────────────────────
+
+/** 自动更新配置（全系统唯一一条） */
+export type AutoUpdateConfig = {
+  enabled: boolean;                    // 是否启用自动更新
+  interval_minutes: number;            // 检查频率（分钟），1~1440
+  last_run_at: string | null;          // 上次检查时间（ISO）
+  last_commit_hash: string | null;     // 上次看到的远程 commit hash
+};
+
+/** 自动更新日志（每次检查/部署一条） */
+export type AutoUpdateLog = {
+  id: number;
+  created_at: string;                  // 写入时间（ISO）
+  action: string;                      // check / deploy
+  status: string;                      // ok / no-change / error
+  details: string | null;              // 人类可读描述
+  duration_ms: number | null;          // 动作耗时（毫秒）
+};
+
+/** 自动更新状态 = 配置 + 最近 100 条日志 */
+export type AutoUpdateStatus = {
+  config: AutoUpdateConfig;
+  recent_logs: AutoUpdateLog[];
+};
+
+/** [管理员] 获取自动更新配置和最近日志 */
+export async function fetchAutoUpdateStatus(): Promise<AutoUpdateStatus> {
+  const { data } = await api.get<AutoUpdateStatus>("/admin/auto-update/status");
+  return data;
+}
+
+/** [管理员] 更新自动更新配置（enabled / interval_minutes 可选其一或都传） */
+export async function updateAutoUpdateConfig(body: {
+  enabled?: boolean;
+  interval_minutes?: number;
+}): Promise<AutoUpdateConfig> {
+  const { data } = await api.post<AutoUpdateConfig>("/admin/auto-update/config", body);
+  return data;
+}
+
+/** [管理员] 立即手动触发一次自动更新检查 */
+export async function triggerAutoUpdateNow(): Promise<{ ok: boolean; message: string }> {
+  const { data } = await api.post<{ ok: boolean; message: string }>("/admin/auto-update/trigger");
   return data;
 }

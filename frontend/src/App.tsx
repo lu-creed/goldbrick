@@ -29,6 +29,7 @@ import BacktestHistoryPage from "./pages/BacktestHistoryPage";
 import DavPage from "./pages/DavPage";
 import LoginPage from "./pages/LoginPage";
 import UserManagementPage from "./pages/UserManagementPage";
+import AutoUpdatePage from "./pages/AutoUpdatePage";
 import { UserInfo, fetchCurrentUser } from "./api/client";
 
 const { Header, Content, Footer } = Layout;
@@ -59,6 +60,7 @@ function menuSelectedKeys(loc: { pathname: string; hash: string }): string[] {
   if (pathname === "/backtest/history") return ["m-backtest-records"];
   if (pathname === "/backtest") return ["m-backtest-start"];
   if (pathname === "/admin/users") return ["m-user-mgmt"];
+  if (pathname === "/admin/auto-update") return ["m-auto-update"];
   if (pathname === "/") return ["m-kline"];
   return ["m-kline"];
 }
@@ -179,6 +181,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
       label: "系统管理",
       children: [
         { key: "m-user-mgmt", label: <Link to="/admin/users" onClick={() => setNavDrawerOpen(false)}>用户管理</Link> },
+        { key: "m-auto-update", label: <Link to="/admin/auto-update" onClick={() => setNavDrawerOpen(false)}>自动更新</Link> },
       ],
     }] : []),
   ];
@@ -322,6 +325,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
             <Route path="/backtest/history" element={<BacktestHistoryPage />} />
             {/* 系统管理（仅管理员可访问） */}
             <Route path="/admin/users" element={<UserManagementPage currentUser={currentUser} />} />
+            <Route path="/admin/auto-update" element={<AutoUpdatePage currentUser={currentUser} />} />
             {/* 兜底：任何未知 URL 都跳回首页 */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

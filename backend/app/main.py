@@ -27,6 +27,7 @@ from app.api.screening import router as screening_router
 from app.api.backtest import router as backtest_router
 from app.api.dav import router as dav_router
 from app.api.watchlist import router as watchlist_router
+from app.api.auto_update import router as auto_update_router
 from app.database import (
     Base,
     SessionLocal,
@@ -132,6 +133,7 @@ app.include_router(screening_router, prefix="/api")           # 条件选股（�
 app.include_router(backtest_router, prefix="/api")             # 全市场条件选股回测
 app.include_router(dav_router, prefix="/api")                  # 大V看板（ABCD分类 + 预期股息率）
 app.include_router(watchlist_router, prefix="/api")            # 自选股池（轻量收藏）
+app.include_router(auto_update_router, prefix="/api")          # 管理：GitHub 自动更新状态/配置/日志
 
 
 @app.get("/api/health")

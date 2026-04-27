@@ -371,3 +371,38 @@ class WatchlistStock(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (UniqueConstraint("user_id", "ts_code", name="uq_watchlist_user_ts_code"),)
+
+
+class AutoUpdateConfig(Base):
+    """自动更新配置：全系统唯一一条记录，控制「服务器多久自检一次 GitHub 有无新提交」。
+
+    enabled=True 时，后端 APScheduler 每隔 interval_minutes 会去 git fetch 比对 HEAD。
+    发现新 commit → 记一条 check 日志 → spawn scripts/update.sh（detached）完成部署。
+    enabled=False 时，定时器仍在注册，但 tick 里读到 disabled 会直接跳过。
+    """
+    __tablename__ = "auto_update_config"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)                    # 是否启用自动更新
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=5)                 # 检查频率（分钟），1~1440
+    last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # 上次执行检查的时间
+    last_commit_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # 上次检查到的远程 commit hash
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AutoUpdateLog(Base):
+    """自动更新日志：每次检查/部署记录一条，前端页面展示运行历史。
+
+    action: check（检查远程）/ deploy（触发 update.sh）
+    status: ok（有变更已处理）/ no-change（无变更）/ error（执行失败）
+    details: 可读描述，例如 "本地 ab12cd → 远程 34ef56" 或错误信息
+    duration_ms: 该动作耗时（毫秒），便于观察网络延迟
+    """
+    __tablename__ = "auto_update_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    action: Mapped[str] = mapped_column(String(16))                                  # check / deploy
+    status: Mapped[str] = mapped_column(String(16))                                  # ok / no-change / error
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
