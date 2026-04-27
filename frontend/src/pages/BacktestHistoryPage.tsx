@@ -700,7 +700,6 @@ function CompareDrawer({ open, onClose, records }: CompareDrawerProps) {
   const chartInst = useRef<echarts.ECharts | null>(null);
   const [details, setDetails] = useState<(BacktestRecordDetail | null)[]>([]);
   const [loading, setLoading] = useState(false);
-  const isMobile = useIsMobile();
 
   // 每次打开时并发加载所有选中记录的详情（含资金曲线数据）
   useEffect(() => {
