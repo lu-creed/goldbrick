@@ -1188,6 +1188,12 @@ export async function updateUser(
   return data;
 }
 
+/** [管理员] 查询当前开放注册开关状态 */
+export async function fetchRegistrationSetting(): Promise<{ allow_registration: boolean }> {
+  const { data } = await api.get<{ allow_registration: boolean }>("/auth/settings/registration");
+  return data;
+}
+
 /** [管理员] 开关开放注册 */
 export async function toggleRegistration(allow: boolean): Promise<{ allow_registration: boolean }> {
   const { data } = await api.patch<{ allow_registration: boolean }>("/auth/settings/registration", { allow });

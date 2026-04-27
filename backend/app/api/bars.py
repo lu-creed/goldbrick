@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.auth import get_current_user
 from app.models import BarDaily, Symbol
 from app.schemas import BarPoint, CustomIndicatorPoint, CustomIndicatorSeriesOut, Interval
 from app.services.adj import AdjType, apply_adj, build_adj_map, get_latest_factor
@@ -38,6 +39,7 @@ def get_bars(
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     adj: AdjType = Query("none"),
+    _user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """获取 K 线数据。
@@ -106,6 +108,7 @@ def get_custom_indicator_series(
     adj: AdjType = Query("none"),
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
+    _user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """获取自定义指标的某条子线的日线序列，用于 K 线图副图叠加展示。

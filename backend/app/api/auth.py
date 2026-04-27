@@ -167,6 +167,17 @@ def update_user(
     return user
 
 
+@router.get("/settings/registration")
+def get_registration_setting(
+    _admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """[管理员] 查询当前开放注册开关状态。"""
+    setting = db.query(AppSetting).filter(AppSetting.key == _ALLOW_REGISTRATION_KEY).first()
+    allow = setting is not None and setting.value == "true"
+    return {"allow_registration": allow}
+
+
 @router.patch("/settings/registration")
 def toggle_registration(
     body: RegistrationSettingIn,

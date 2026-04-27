@@ -45,6 +45,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_admin
 from app.config import get_backend_root, settings
 from app.database import get_db
 from app.models import AdjFactorDaily, BarDaily, InstrumentMeta, Symbol, SyncJob, SyncRun
@@ -79,7 +80,7 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 
 
 @router.get("/job", response_model=SyncJobOut)
-def get_sync_job(db: Session = Depends(get_db)):
+def get_sync_job(_admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """查询当前定时同步任务配置（cron 表达式、是否启用、上次运行信息）。"""
     job = db.query(SyncJob).order_by(SyncJob.id.asc()).first()
     if not job:
@@ -88,7 +89,7 @@ def get_sync_job(db: Session = Depends(get_db)):
 
 
 @router.put("/job", response_model=SyncJobOut)
-def put_sync_job(body: SyncJobUpdate, db: Session = Depends(get_db)):
+def put_sync_job(body: SyncJobUpdate, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """更新定时同步任务配置（修改 cron 表达式或启用/禁用），修改后立即重新注册到调度器。
 
     cron_expr 格式：标准 5 字段 cron，如 "0 20 * * 1-5"（工作日 20:00 运行）。
@@ -112,7 +113,7 @@ def put_sync_job(body: SyncJobUpdate, db: Session = Depends(get_db)):
 
 
 @router.post("/run", response_model=SyncRunOut)
-def trigger_run():
+def trigger_run(_admin=Depends(get_current_admin)):
     """手动立即触发全量同步（与定时任务相同的逻辑，trigger 标记为 'manual'）。
 
     同步会在后台线程中进行，此接口立即返回「排队中」状态的 SyncRun 记录。
@@ -129,7 +130,7 @@ def trigger_run():
 
 
 @router.post("/fetch", response_model=SyncRunOut)
-def trigger_fetch(body: ManualFetchRequest):
+def trigger_fetch(body: ManualFetchRequest, _admin=Depends(get_current_admin)):
     """手动指定股票列表和日期范围进行拉取（用于补录特定股票特定时间段的数据）。
 
     参数说明见 ManualFetchRequest schema：
@@ -154,7 +155,7 @@ def trigger_fetch(body: ManualFetchRequest):
 
 
 @router.post("/fetch-all", response_model=SyncRunOut)
-def trigger_fetch_all(body: ManualFetchAllRequest, db: Session = Depends(get_db)):
+def trigger_fetch_all(body: ManualFetchAllRequest, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """全市场手动拉取：标的范围为 instrument_meta 中所有 asset_type='stock' 的个股。
 
     比 /run 更灵活：可以指定日期范围，而不是固定拉「今天往前 N 天」。
@@ -208,7 +209,7 @@ def trigger_fetch_all(body: ManualFetchAllRequest, db: Session = Depends(get_db)
 
 
 @router.post("/fetch-all-index", response_model=SyncRunOut)
-def trigger_fetch_all_index(body: ManualFetchAllRequest, db: Session = Depends(get_db)):
+def trigger_fetch_all_index(body: ManualFetchAllRequest, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """全市场指数手动拉取：标的为 instrument_meta 中 asset_type='index' 的已登记指数。
 
     走 Tushare index_daily 接口（无复权因子），日期语义与 /fetch-all 相同。
@@ -244,14 +245,14 @@ def trigger_fetch_all_index(body: ManualFetchAllRequest, db: Session = Depends(g
 
 
 @router.get("/runs", response_model=List[SyncRunOut])
-def list_runs(limit: int = 20, db: Session = Depends(get_db)):
+def list_runs(limit: int = 20, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """查询最近 N 条同步运行记录（默认 20 条，最多 100 条），按 ID 降序（最新在前）。"""
     lim = min(max(limit, 1), 100)
     return db.query(SyncRun).order_by(SyncRun.id.desc()).limit(lim).all()
 
 
 @router.post("/runs/{run_id}/pause", response_model=SyncRunOut)
-def pause_sync_run(run_id: int, db: Session = Depends(get_db)):
+def pause_sync_run(run_id: int, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """请求暂停正在运行的同步任务。
 
     协作式暂停：不强制杀死线程，而是设置 pause_requested=True 标志。
@@ -274,7 +275,7 @@ def pause_sync_run(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/runs/{run_id}/resume", response_model=SyncRunOut)
-def resume_sync_run(run_id: int, db: Session = Depends(get_db)):
+def resume_sync_run(run_id: int, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """解除暂停，继续执行同步任务。
 
     两种情况均可 resume：
@@ -297,7 +298,7 @@ def resume_sync_run(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/runs/{run_id}/cancel", response_model=SyncRunOut)
-def cancel_sync_run(run_id: int, force: bool = False, db: Session = Depends(get_db)):
+def cancel_sync_run(run_id: int, force: bool = False, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """请求取消同步任务。
 
     两种模式：
@@ -336,7 +337,7 @@ def cancel_sync_run(run_id: int, force: bool = False, db: Session = Depends(get_
 
 
 @router.get("/runs/{run_id}/log", response_class=PlainTextResponse)
-def get_run_log(run_id: int, db: Session = Depends(get_db)):
+def get_run_log(run_id: int, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """下载指定同步任务的日志文件内容（纯文本格式）。
 
     安全校验：日志路径必须在预设的 log_dir/sync 目录内，防止路径穿越攻击。
@@ -373,7 +374,7 @@ def get_run_log(run_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/universe/sync", response_model=UniverseSyncOut)
-def sync_universe(force: bool = False, db: Session = Depends(get_db)):
+def sync_universe(force: bool = False, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """兼容旧路径：等价于 POST /sync/stock-list（增量更新股票元数据）。"""
     try:
         return sync_universe_meta(db, force=force)
@@ -384,7 +385,7 @@ def sync_universe(force: bool = False, db: Session = Depends(get_db)):
 
 
 @router.post("/stock-list", response_model=UniverseSyncOut)
-def post_stock_list(db: Session = Depends(get_db)):
+def post_stock_list(_admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """从 Tushare 增量更新股票元数据（名称、市场、交易所、上市日期）。
 
     新股会自动新增，已有股票若字段有变化（如改名）则更新。
@@ -402,6 +403,7 @@ def post_stock_list(db: Session = Depends(get_db)):
 def get_index_candidates(
     market: Optional[str] = None,
     limit: int = 2000,
+    _admin=Depends(get_current_admin),
 ):
     """从 Tushare 获取指数候选列表（用于数据后台「指数」页签弹窗展示）。
 
@@ -422,7 +424,7 @@ def get_index_candidates(
 
 
 @router.post("/index-meta/apply", response_model=IndexMetaApplyResult)
-def post_index_meta_apply(body: IndexMetaApplyRequest, db: Session = Depends(get_db)):
+def post_index_meta_apply(body: IndexMetaApplyRequest, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """将用户勾选的指数正式写入 instrument_meta 和 symbols 表（本阶段不支持移除）。
 
     已存在的指数代码会跳过（幂等）；与个股代码冲突的会报 400 错误。
@@ -439,7 +441,7 @@ def post_index_meta_apply(body: IndexMetaApplyRequest, db: Session = Depends(get
 
 
 @router.get("/data-center", response_model=List[DataCenterRow])
-def data_center(limit: int = 500, db: Session = Depends(get_db)):
+def data_center(limit: int = 500, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """数据后台汇总：返回所有已登记标的的数据统计信息（K 线条数、复权因子条数、覆盖率等）。
 
     用单条聚合 SQL（替代 N+1 循环）一次性返回所有标的的统计，适合数据后台全量展示。
@@ -453,6 +455,7 @@ def data_center(limit: int = 500, db: Session = Depends(get_db)):
     # 兼容迁移：若 instrument_meta 为空，先从 symbols 迁移一次
     bootstrap_meta_from_symbols(db)
 
+    lim = min(max(limit, 1), 2000)
     # 单条 SQL：一次查询所有标的的 bar 统计 + adj 匹配数
     # LEFT JOIN adj 只统计 bar 与 adj 日期完全相同的行（即已正确对齐的复权因子数）
     sql = text("""
@@ -510,6 +513,7 @@ def symbol_daily_bars(
     end: Optional[date] = None,
     page: int = 1,
     page_size: int = 20,
+    _admin=Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
     """查询单只股票的日线明细（分页，按日期降序，最新在前）。
@@ -553,7 +557,7 @@ def symbol_daily_bars(
 
 
 @router.post("/single-day", response_model=SyncRunOut)
-def sync_single_day(body: SingleDaySyncRequest):
+def sync_single_day(body: SingleDaySyncRequest, _admin=Depends(get_current_admin)):
     """补录或覆盖单只股票的单日 K 线数据（bar + 复权因子）。
 
     适用场景：发现某只股票某天的数据有误或缺失，手动补录。

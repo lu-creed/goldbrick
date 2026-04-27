@@ -109,7 +109,7 @@ def _to_out(row: DavStockWatch, db: Session) -> DavStockOut:
 # ── 路由 ────────────────────────────────────────────────────────────────────
 
 @router.get("/stocks/search", response_model=List[SearchItem])
-def search_stocks(q: str = Query("", max_length=20), db: Session = Depends(get_db)):
+def search_stocks(q: str = Query("", max_length=20), _user=Depends(get_current_user), db: Session = Depends(get_db)):
     """在本地 instrument_meta 中按代码或名称模糊搜索，供添加时下拉选用。"""
     like = f"%{q}%"
     rows = db.query(InstrumentMeta).filter(

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_admin
 from app.database import get_db
 from app.models import Symbol
 from app.services.indicator_precompute import rebuild_indicator_pre_for_symbol
@@ -24,12 +25,12 @@ class SetTokenReq(BaseModel):
 
 
 @router.get("/tushare/token-status")
-def tushare_token_status():
+def tushare_token_status(_admin=Depends(get_current_admin)):
     return get_tushare_token_status()
 
 
 @router.post("/tushare/token")
-def set_tushare_token(body: SetTokenReq):
+def set_tushare_token(body: SetTokenReq, _admin=Depends(get_current_admin)):
     token = (body.token or "").strip()
     if not token:
         raise HTTPException(status_code=400, detail="token 不能为空")
@@ -49,7 +50,7 @@ class RebuildIndicatorPreReq(BaseModel):
 
 
 @router.post("/indicator-pre/rebuild")
-def rebuild_indicator_pre(body: RebuildIndicatorPreReq, db: Session = Depends(get_db)):
+def rebuild_indicator_pre(body: RebuildIndicatorPreReq, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     codes = [c.strip().upper() for c in (body.ts_codes or []) if c and str(c).strip()]
     if codes:
         syms = db.query(Symbol).filter(Symbol.ts_code.in_(codes)).all()

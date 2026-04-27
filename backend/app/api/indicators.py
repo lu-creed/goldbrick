@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_admin, get_current_user
 from app.database import get_db
 from app.models import Indicator
 from app.services.indicator_seed import seed_indicators
@@ -84,7 +85,7 @@ class IndicatorDetail(BaseModel):
 
 
 @router.get("", response_model=List[IndicatorListItem])
-def list_indicators(db: Session = Depends(get_db)):
+def list_indicators(_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """获取所有内置指标的列表（简要信息，不含参数和子线详情）。"""
     rows = db.query(Indicator).order_by(Indicator.id.asc()).all()
     return [
@@ -101,7 +102,7 @@ def list_indicators(db: Session = Depends(get_db)):
 
 
 @router.post("/seed")
-def seed(force: bool = False, db: Session = Depends(get_db)):
+def seed(force: bool = False, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """初始化指标库种子数据（首次部署时调用）。
 
     force=False（默认）：若已有数据则跳过（幂等）。
@@ -116,7 +117,7 @@ def seed(force: bool = False, db: Session = Depends(get_db)):
 
 
 @router.get("/{indicator_id}", response_model=IndicatorDetail)
-def get_indicator(indicator_id: int, db: Session = Depends(get_db)):
+def get_indicator(indicator_id: int, _user=Depends(get_current_user), db: Session = Depends(get_db)):
     """获取单个内置指标的完整详情（含参数列表和子线列表）。
 
     用于指标库页点击某个指标后弹出详情卡片展示。
