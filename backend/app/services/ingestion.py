@@ -204,14 +204,24 @@ def _fetch_and_upsert_index_daily(
         w(f"no index_daily rows for {code}")
         return 0, False
 
+    # 批量预加载当前日期范围内已有的 bars，避免对每行单独 SELECT（N+1 → 1 次读）
+    start_dt = datetime.strptime(s, "%Y%m%d").date()
+    end_dt   = datetime.strptime(e, "%Y%m%d").date()
+    existing_bars: dict = {
+        r.trade_date: r
+        for r in db.query(BarDaily)
+        .filter(
+            BarDaily.symbol_id == symbol.id,
+            BarDaily.trade_date >= start_dt,
+            BarDaily.trade_date <= end_dt,
+        )
+        .all()
+    }
+
     count = 0
     for _, row in df_daily.iterrows():
         trade_date = _parse_trade_date(row["trade_date"])
-        existing = (
-            db.query(BarDaily)
-            .filter(and_(BarDaily.symbol_id == symbol.id, BarDaily.trade_date == trade_date))
-            .one_or_none()
-        )
+        existing = existing_bars.get(trade_date)
         vol = int(float(row["vol"])) if row.get("vol") is not None else 0
         # Tushare index_daily 的 amount 为千元，统一转换为元（与个股 daily 接口对齐）
         amt_k = float(row["amount"]) if row.get("amount") is not None else 0.0
@@ -365,6 +375,17 @@ def fetch_and_upsert_symbol(
                     continue
 
     # ---- 写入 bars_daily ----
+    # 批量预加载当前范围内已有的行（READ，不持写锁），避免 N+1 SELECT
+    existing_bars: dict = {
+        r.trade_date: r
+        for r in db.query(BarDaily)
+        .filter(
+            BarDaily.symbol_id == symbol.id,
+            BarDaily.trade_date >= start,
+            BarDaily.trade_date <= end,
+        )
+        .all()
+    }
     count = 0
     for _, row in df_daily.iterrows():
         td_raw = row["trade_date"]
@@ -375,11 +396,7 @@ def fetch_and_upsert_symbol(
         else:
             trade_date = datetime.strptime(td_str[:10], "%Y-%m-%d").date()
 
-        existing = (
-            db.query(BarDaily)
-            .filter(and_(BarDaily.symbol_id == symbol.id, BarDaily.trade_date == trade_date))
-            .one_or_none()
-        )
+        existing = existing_bars.get(trade_date)
         vol = int(float(row["vol"])) if row.get("vol") is not None else 0
         # Tushare daily 的 amount 单位已是「元」，与 index_daily（千元）不同，无需换算
         amt = float(row["amount"]) if row.get("amount") is not None else 0.0
@@ -417,16 +434,28 @@ def fetch_and_upsert_symbol(
     # ---- 写入 adj_factors_daily ----
     adj_count = 0
     if adj_map:
+        # 解析 adj_map 的日期键，批量预加载已有记录（同样 1 次 SELECT）
+        adj_dates = []
+        for td_str in adj_map.keys():
+            if len(td_str) == 8:
+                adj_dates.append(datetime.strptime(td_str, "%Y%m%d").date())
+            else:
+                adj_dates.append(datetime.strptime(td_str[:10], "%Y-%m-%d").date())
+        existing_adjs: dict = {
+            r.trade_date: r
+            for r in db.query(AdjFactorDaily)
+            .filter(
+                AdjFactorDaily.symbol_id == symbol.id,
+                AdjFactorDaily.trade_date.in_(adj_dates),
+            )
+            .all()
+        }
         for td_str, af in adj_map.items():
             if len(td_str) == 8:
                 adj_date = datetime.strptime(td_str, "%Y%m%d").date()
             else:
                 adj_date = datetime.strptime(td_str[:10], "%Y-%m-%d").date()
-            existing_adj = (
-                db.query(AdjFactorDaily)
-                .filter(and_(AdjFactorDaily.symbol_id == symbol.id, AdjFactorDaily.trade_date == adj_date))
-                .one_or_none()
-            )
+            existing_adj = existing_adjs.get(adj_date)
             if existing_adj:
                 existing_adj.adj_factor = Decimal(str(af))
                 existing_adj.source = data_source
