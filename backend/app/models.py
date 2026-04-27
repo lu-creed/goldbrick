@@ -347,6 +347,8 @@ class DavStockWatch(Base):
     dav_class: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)   # A/B/C/D
     manual_payout_ratio: Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
     manual_eps: Mapped[Optional[float]] = mapped_column(Numeric(12, 4), nullable=True)
+    auto_payout_ratio: Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)   # AKShare 自动填充
+    auto_eps: Mapped[Optional[float]] = mapped_column(Numeric(12, 4), nullable=True)            # AKShare 自动填充
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -406,3 +408,26 @@ class AutoUpdateLog(Base):
     status: Mapped[str] = mapped_column(String(16))                                  # ok / no-change / error
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
+class FundamentalDaily(Base):
+    """全市场基本面日快照：每日从 AKShare stock_zh_a_spot_em 拉取 PE/PB/市值存入。
+
+    ts_code 直接存 Tushare 格式（如 '000001.SZ'），不依赖 symbols 表，
+    覆盖全量 A 股（含未在本地 symbols 池登记的标的）。
+    pe_ttm 可能为 None（未盈利、停牌、新股等情况 AKShare 返回 '-'）。
+    """
+    __tablename__ = "fundamental_daily"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    ts_code: Mapped[str] = mapped_column(String(32), index=True)
+    trade_date: Mapped[Date] = mapped_column(Date, index=True)
+    pe_ttm: Mapped[Optional[float]] = mapped_column(Numeric(12, 4), nullable=True)    # 动态市盈率（TTM）
+    pb: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)        # 市净率
+    total_mv: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)  # 总市值（元）
+    circ_mv: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)   # 流通市值（元）
+    source: Mapped[str] = mapped_column(String(32), default="akshare")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("ts_code", "trade_date", name="uq_fundamental_ts_trade_date"),)

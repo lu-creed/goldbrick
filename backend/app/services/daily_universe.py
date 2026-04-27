@@ -61,6 +61,10 @@ class DailyUniverseFilters:
     amount_max: Optional[float] = None
     turnover_min: Optional[float] = None
     turnover_max: Optional[float] = None
+    pe_min: Optional[float] = None
+    pe_max: Optional[float] = None
+    pb_min: Optional[float] = None
+    pb_max: Optional[float] = None
 
 
 def _norm_str(v: Optional[str]) -> Optional[str]:
@@ -175,6 +179,27 @@ def _item_passes_filters(row: dict[str, Any], f: DailyUniverseFilters) -> bool:
         if f.pct_max is not None and pcf > f.pct_max:
             return False
 
+    # PE/PB（可能为 None——未盈利/停牌等）：有筛选要求但字段为 None 时排除
+    pe = row.get("pe_ttm")
+    if f.pe_min is not None or f.pe_max is not None:
+        if pe is None:
+            return False
+        pef = float(pe)
+        if f.pe_min is not None and pef < f.pe_min:
+            return False
+        if f.pe_max is not None and pef > f.pe_max:
+            return False
+
+    pb = row.get("pb")
+    if f.pb_min is not None or f.pb_max is not None:
+        if pb is None:
+            return False
+        pbf = float(pb)
+        if f.pb_min is not None and pbf < f.pb_min:
+            return False
+        if f.pb_max is not None and pbf > f.pb_max:
+            return False
+
     return True  # 所有条件均通过，保留这一行
 
 
@@ -200,6 +225,10 @@ def parse_daily_universe_filters(
     amount_max: Optional[float] = None,
     turnover_min: Optional[float] = None,
     turnover_max: Optional[float] = None,
+    pe_min: Optional[float] = None,
+    pe_max: Optional[float] = None,
+    pb_min: Optional[float] = None,
+    pb_max: Optional[float] = None,
 ) -> DailyUniverseFilters:
     """将 HTTP 查询参数整理为内部筛选对象。
 
@@ -240,6 +269,10 @@ def parse_daily_universe_filters(
         amount_max=amount_max,
         turnover_min=turnover_min,
         turnover_max=turnover_max,
+        pe_min=pe_min,
+        pe_max=pe_max,
+        pb_min=pb_min,
+        pb_max=pb_max,
     )
 
 
@@ -306,6 +339,7 @@ def list_daily_universe(
     # 核心 SQL：连接 bars_daily + symbols + instrument_meta，获取当日所有 A 股行情
     # 子查询 prev_close：取该股在交易日 d 之前最近一天的收盘价，用于计算涨跌幅
     # LEFT 中没有 prev_close 的行（新股首日/上市第一天）pct_change 将为 None
+    # LEFT JOIN fundamental_daily：加入当日 PE/PB/市值（可能为 None，同步前未拉取时）
     sql = text("""
         SELECT
             s.ts_code,
@@ -325,10 +359,14 @@ def list_daily_universe(
                 WHERE b2.symbol_id = b.symbol_id AND b2.trade_date < :d
                 ORDER BY b2.trade_date DESC
                 LIMIT 1
-            ) AS prev_close
+            ) AS prev_close,
+            CAST(fd.pe_ttm AS REAL) AS pe_ttm,
+            CAST(fd.pb AS REAL) AS pb,
+            CAST(fd.total_mv AS REAL) AS total_mv
         FROM bars_daily b
         JOIN symbols s ON s.id = b.symbol_id
         JOIN instrument_meta m ON m.ts_code = s.ts_code
+        LEFT JOIN fundamental_daily fd ON fd.ts_code = s.ts_code AND fd.trade_date = :d
         WHERE b.trade_date = :d
           AND m.asset_type = 'stock'
     """)
@@ -359,6 +397,9 @@ def list_daily_universe(
                 "amount": float(r.amount),
                 "turnover_rate": None if tr is None else float(tr),
                 "pct_change": pct,
+                "pe_ttm": None if r.pe_ttm is None else float(r.pe_ttm),
+                "pb": None if r.pb is None else float(r.pb),
+                "total_mv": None if r.total_mv is None else float(r.total_mv),
             }
         )
 

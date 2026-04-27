@@ -71,6 +71,16 @@ function fmtVol(v: number): string {
 }
 
 /**
+ * 把市值（元）格式化为"X 万亿"、"X 亿"或"X 万"，便于快速扫读
+ */
+function fmtMV(v: number | null): string {
+  if (v == null) return "—";
+  if (v >= 1e12) return `${(v / 1e12).toFixed(2)} 万亿`;
+  if (v >= 1e8) return `${(v / 1e8).toFixed(2)} 亿`;
+  return `${(v / 1e4).toFixed(2)} 万`;
+}
+
+/**
  * 把任意类型的值转换为 number，转换失败则返回 undefined
  * 用于从表单中安全地读取数值型输入，避免空字符串或 null 引起接口错误
  */
@@ -126,6 +136,14 @@ function filterParamsFromForm(values: Record<string, unknown>): DailyUniverseFil
   if (ax !== undefined) out.amount_max = ax;
   if (tm !== undefined) out.turnover_min = tm;
   if (tx !== undefined) out.turnover_max = tx;
+  const pem = numOrUndef(values.pe_min);
+  const pex = numOrUndef(values.pe_max);
+  const pbm = numOrUndef(values.pb_min);
+  const pbx = numOrUndef(values.pb_max);
+  if (pem !== undefined) out.pe_min = pem;
+  if (pex !== undefined) out.pe_max = pex;
+  if (pbm !== undefined) out.pb_min = pbm;
+  if (pbx !== undefined) out.pb_max = pbx;
   return out;
 }
 
@@ -296,6 +314,27 @@ export default function StockListPage() {
         sorter: true,
         sortOrder: sortOrderForCol("turnover_rate"),
         render: (v: number | null) => (v == null ? "—" : v.toFixed(2)),
+      },
+      {
+        title: "PE(TTM)",
+        dataIndex: "pe_ttm",
+        width: 88,
+        align: "right" as const,
+        render: (v: number | null) => (v == null ? "—" : v.toFixed(1)),
+      },
+      {
+        title: "PB",
+        dataIndex: "pb",
+        width: 72,
+        align: "right" as const,
+        render: (v: number | null) => (v == null ? "—" : v.toFixed(2)),
+      },
+      {
+        title: "总市值",
+        dataIndex: "total_mv",
+        width: 100,
+        align: "right" as const,
+        render: (v: number | null) => fmtMV(v),
       },
       {
         title: "成交量",
@@ -545,7 +584,7 @@ export default function StockListPage() {
                         </Form.Item>
                       </Col>
                     </Row>
-                    {/* 第四行：成交额、换手率、操作按钮 */}
+                    {/* 第四行：成交额、换手率、市盈率 */}
                     <Row gutter={[16, 4]}>
                       <Col xs={24} sm={12} md={8}>
                         <Form.Item label="成交额（元）">
@@ -566,6 +605,33 @@ export default function StockListPage() {
                               <InputNumber placeholder="最小" style={{ width: "100%" }} controls={false} />
                             </Form.Item>
                             <Form.Item name="turnover_max" noStyle>
+                              <InputNumber placeholder="最大" style={{ width: "100%" }} controls={false} />
+                            </Form.Item>
+                          </Flex>
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} sm={12} md={8}>
+                        <Form.Item label="市盈率 PE(TTM)">
+                          <Flex gap={8}>
+                            <Form.Item name="pe_min" noStyle>
+                              <InputNumber placeholder="最小" style={{ width: "100%" }} controls={false} />
+                            </Form.Item>
+                            <Form.Item name="pe_max" noStyle>
+                              <InputNumber placeholder="最大" style={{ width: "100%" }} controls={false} />
+                            </Form.Item>
+                          </Flex>
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                    {/* 第五行：市净率、操作按钮 */}
+                    <Row gutter={[16, 4]}>
+                      <Col xs={24} sm={12} md={8}>
+                        <Form.Item label="市净率 PB">
+                          <Flex gap={8}>
+                            <Form.Item name="pb_min" noStyle>
+                              <InputNumber placeholder="最小" style={{ width: "100%" }} controls={false} />
+                            </Form.Item>
+                            <Form.Item name="pb_max" noStyle>
                               <InputNumber placeholder="最大" style={{ width: "100%" }} controls={false} />
                             </Form.Item>
                           </Flex>

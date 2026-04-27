@@ -170,6 +170,57 @@ def _commit_run_finish(
     db.commit()
 
 
+def _sync_fundamentals_after_run(db, fp, *, synced_codes: Optional[list[str]]) -> None:
+    """同步结束后自动拉取财务数据，写日志，失败不中断。
+
+    Args:
+        synced_codes: 本次同步的 ts_code 列表；None 表示全市场（全量同步），
+                      此时 DAV 更新覆盖所有用户的所有持仓股。
+    """
+    from app.models import DavStockWatch
+    from app.services.akshare_fundamentals import (
+        fetch_and_upsert_full_market_fundamental,
+        sync_dav_auto_fundamentals,
+    )
+
+    fp.write("[FUNDAMENTAL] 同步 PE/PB 日快照...\n")
+    fp.flush()
+    try:
+        result = fetch_and_upsert_full_market_fundamental(db, date.today())
+        fp.write(
+            f"[FUNDAMENTAL] PE/PB 完成: upserted={result['upserted']} "
+            f"skipped={result['skipped']}"
+            + (f" error={result['error']}" if result.get("error") else "")
+            + "\n"
+        )
+    except Exception as ex:  # noqa: BLE001
+        fp.write(f"[FUNDAMENTAL] WARN PE/PB 失败: {ex}\n")
+
+    fp.write("[FUNDAMENTAL] 更新 DAV 派息率/EPS...\n")
+    fp.flush()
+    try:
+        if synced_codes is None:
+            dav_codes = [r[0] for r in db.query(DavStockWatch.ts_code).distinct().all()]
+        else:
+            synced_set = set(synced_codes)
+            dav_codes = [
+                r[0]
+                for r in db.query(DavStockWatch.ts_code).distinct().all()
+                if r[0] in synced_set
+            ]
+        if dav_codes:
+            dav_result = sync_dav_auto_fundamentals(db, dav_codes, log_fp=fp)
+            fp.write(
+                f"[FUNDAMENTAL] DAV 完成: updated={dav_result['updated']} "
+                f"failed={dav_result['failed']}\n"
+            )
+        else:
+            fp.write("[FUNDAMENTAL] DAV: 无匹配股票，跳过\n")
+    except Exception as ex:  # noqa: BLE001
+        fp.write(f"[FUNDAMENTAL] WARN DAV 失败: {ex}\n")
+    fp.flush()
+
+
 def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRun:
     """执行全量同步：拉取 instrument_meta 中所有个股（不含指数）的日线数据。
 
@@ -312,6 +363,9 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
             if stopped_early:
                 fp.write(f"stopped by user total_rows_touched~={total} ok={ok_count} fail={fail_count} adj_fail={adj_fail_count}\n")
             else:
+                # 主循环正常结束后：自动同步财务数据（全市场 PE/PB 快照 + DAV 派息率/EPS）
+                # synced_codes=None 表示全市场同步，DAV 更新覆盖所有用户的所有股票
+                _sync_fundamentals_after_run(db, fp, synced_codes=None)
                 fp.write(f"done total_rows_touched~={total} ok={ok_count} fail={fail_count} adj_fail={adj_fail_count}\n")
 
         _commit_run_finish(
@@ -486,6 +540,9 @@ def run_symbol_list_sync(
             if stopped_early:
                 fp.write(f"stopped by user total_rows_touched~={total} ok={ok_count} fail={fail_count} adj_fail={adj_fail_count}\n")
             else:
+                # 主循环正常结束后：自动同步财务数据
+                # synced_codes=norm_codes 表示只更新本次同步股票的 DAV 自动字段
+                _sync_fundamentals_after_run(db, fp, synced_codes=norm_codes)
                 fp.write(f"done total_rows_touched~={total} ok={ok_count} fail={fail_count} adj_fail={adj_fail_count}\n")
 
         _commit_run_finish(

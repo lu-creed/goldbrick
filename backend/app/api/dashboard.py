@@ -62,6 +62,10 @@ def get_daily_stocks(
     amount_max: Optional[float] = Query(None, ge=0),
     turnover_min: Optional[float] = Query(None, ge=0),
     turnover_max: Optional[float] = Query(None, ge=0),
+    pe_min: Optional[float] = Query(None, description="市盈率（动态）最小值"),
+    pe_max: Optional[float] = Query(None, description="市盈率（动态）最大值"),
+    pb_min: Optional[float] = Query(None, description="市净率最小值"),
+    pb_max: Optional[float] = Query(None, description="市净率最大值"),
     _user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -103,6 +107,10 @@ def get_daily_stocks(
         amount_max=amount_max,
         turnover_min=turnover_min,
         turnover_max=turnover_max,
+        pe_min=pe_min,
+        pe_max=pe_max,
+        pb_min=pb_min,
+        pb_max=pb_max,
     )
     raw = list_daily_universe(db, trade_date, page, page_size, sort, order, filters=flt)
     # 将 service 层返回的 dict list 转换为 Pydantic 模型（触发字段校验和序列化）

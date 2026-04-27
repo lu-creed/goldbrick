@@ -154,6 +154,19 @@ def ensure_backtest_records_table() -> None:
     pass
 
 
+def ensure_dav_auto_fundamental_columns() -> None:
+    """为 dav_stock_watch 追加 auto_payout_ratio / auto_eps 列（AKShare 自动填充字段）。"""
+    if not str(engine.url).startswith("sqlite"):
+        return
+    with engine.begin() as conn:
+        rows = conn.execute(text("PRAGMA table_info(dav_stock_watch)")).fetchall()
+        names = {r[1] for r in rows}
+        if "auto_payout_ratio" not in names:
+            conn.execute(text("ALTER TABLE dav_stock_watch ADD COLUMN auto_payout_ratio NUMERIC(8,4)"))
+        if "auto_eps" not in names:
+            conn.execute(text("ALTER TABLE dav_stock_watch ADD COLUMN auto_eps NUMERIC(12,4)"))
+
+
 def migrate_for_user_system() -> None:
     """用户体系一次性迁移：删除用户私有表，让 create_all 以新 schema（含 user_id）重建。
 

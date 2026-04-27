@@ -54,6 +54,8 @@ class DavStockOut(BaseModel):
     latest_price: Optional[float]      # 本地 bars_daily 最新收盘价
     manual_payout_ratio: Optional[float]
     manual_eps: Optional[float]
+    auto_payout_ratio: Optional[float]  # AKShare 自动填充的派息率（手填优先）
+    auto_eps: Optional[float]           # AKShare 自动填充的 EPS（手填优先）
     expected_yield: Optional[float]    # 派息率% × EPS ÷ 股价 × 100（%），None 表示数据不足
     data_complete: bool                # True = 三个数据都有，可自动计算
     notes: Optional[str]
@@ -91,17 +93,24 @@ def _to_out(row: DavStockWatch, db: Session) -> DavStockOut:
     meta = db.query(InstrumentMeta).filter(InstrumentMeta.ts_code == row.ts_code).first()
     name = meta.name if meta else None
     price = _latest_price(row.ts_code, db)
-    pr = float(row.manual_payout_ratio) if row.manual_payout_ratio is not None else None
-    eps = float(row.manual_eps) if row.manual_eps is not None else None
+    manual_pr = float(row.manual_payout_ratio) if row.manual_payout_ratio is not None else None
+    manual_eps = float(row.manual_eps) if row.manual_eps is not None else None
+    auto_pr = float(row.auto_payout_ratio) if row.auto_payout_ratio is not None else None
+    auto_eps = float(row.auto_eps) if row.auto_eps is not None else None
+    # 手填优先，手填为空时使用自动值
+    eff_pr = manual_pr if manual_pr is not None else auto_pr
+    eff_eps = manual_eps if manual_eps is not None else auto_eps
     return DavStockOut(
         ts_code=row.ts_code,
         name=name,
         dav_class=row.dav_class,
         latest_price=price,
-        manual_payout_ratio=pr,
-        manual_eps=eps,
-        expected_yield=_compute_yield(pr, eps, price),
-        data_complete=all(x is not None for x in [pr, eps, price]),
+        manual_payout_ratio=manual_pr,
+        manual_eps=manual_eps,
+        auto_payout_ratio=auto_pr,
+        auto_eps=auto_eps,
+        expected_yield=_compute_yield(eff_pr, eff_eps, price),
+        data_complete=all(x is not None for x in [eff_pr, eff_eps, price]),
         notes=row.notes,
     )
 

@@ -275,6 +275,7 @@ class DailyUniverseRow(BaseModel):
     """单日全市场个股行情行（个股列表页）。
 
     pct_change：涨跌幅%，由后端用当日收盘/昨日收盘计算；无昨收时为 None。
+    pe_ttm/pb/total_mv：来自 fundamental_daily 表，同步基本面后才有值，未同步时为 None。
     不含同步元数据（K 线条数、复权因子状态等）——那些见 DataCenterRow。
     """
     ts_code: str
@@ -289,6 +290,9 @@ class DailyUniverseRow(BaseModel):
     amount: float
     turnover_rate: Optional[float] = None
     pct_change: Optional[float] = None
+    pe_ttm: Optional[float] = None     # 动态市盈率（TTM），未同步基本面时为 None
+    pb: Optional[float] = None         # 市净率，未同步基本面时为 None
+    total_mv: Optional[float] = None   # 总市值（元），未同步基本面时为 None
 
 
 class DailyUniverseOut(BaseModel):

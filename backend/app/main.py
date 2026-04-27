@@ -38,6 +38,7 @@ from app.database import (
     ensure_user_indicators_definition_json_column,
     ensure_screening_history_table,
     ensure_backtest_records_table,
+    ensure_dav_auto_fundamental_columns,
     migrate_for_user_system,
     ensure_default_admin_user,
 )
@@ -79,6 +80,7 @@ async def lifespan(app: FastAPI):
     ensure_user_indicators_definition_json_column()
     ensure_screening_history_table()   # 确保 screening_history 表已创建
     ensure_backtest_records_table()    # 确保 backtest_records 表已创建
+    ensure_dav_auto_fundamental_columns()  # 为 dav_stock_watch 追加自动填充字段
     # 4. 确保 sync_jobs 表里至少有一条默认定时任务记录
     db = SessionLocal()
     try:

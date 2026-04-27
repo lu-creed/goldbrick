@@ -182,14 +182,22 @@ function StockModal({ open, editing, onClose, onSaved }: StockModalProps) {
         <Form.Item
           name="manual_payout_ratio"
           label="近两年平均派息率 %"
-          extra="例：33.95 表示 33.95%（每年税后分红 ÷ 归母净利润）"
+          extra={
+            editing?.auto_payout_ratio != null && editing.manual_payout_ratio == null
+              ? `自动获取参考值：${editing.auto_payout_ratio.toFixed(2)}%（手填后将优先使用）`
+              : "例：33.95 表示 33.95%（每年税后分红 ÷ 归母净利润）"
+          }
         >
           <InputNumber min={0} max={200} precision={2} style={{ width: "100%" }} placeholder="如 33.95" />
         </Form.Item>
         <Form.Item
           name="manual_eps"
           label="预测全年 EPS（元/股）"
-          extra="基于自身判断填写当年或次年预测值"
+          extra={
+            editing?.auto_eps != null && editing.manual_eps == null
+              ? `自动获取参考值：¥${editing.auto_eps.toFixed(4)}（手填后将优先使用）`
+              : "基于自身判断填写当年或次年预测值"
+          }
         >
           <InputNumber precision={4} style={{ width: "100%" }} placeholder="如 1.2345" />
         </Form.Item>
@@ -237,19 +245,37 @@ function buildColumns(
     },
     {
       title: "派息率 %",
-      dataIndex: "manual_payout_ratio",
-      width: 90,
+      width: 110,
       align: "right",
-      render: (v: number | null) =>
-        v != null ? `${v.toFixed(2)}%` : <Text type="warning">待补充</Text>,
+      render: (_: unknown, record: DavStockOut) => {
+        if (record.manual_payout_ratio != null)
+          return `${record.manual_payout_ratio.toFixed(2)}%`;
+        if (record.auto_payout_ratio != null)
+          return (
+            <span>
+              {record.auto_payout_ratio.toFixed(2)}%
+              <Text type="secondary" style={{ fontSize: 11, marginLeft: 3 }}>(自动)</Text>
+            </span>
+          );
+        return <Text type="warning">待补充</Text>;
+      },
     },
     {
       title: "预测 EPS",
-      dataIndex: "manual_eps",
-      width: 90,
+      width: 110,
       align: "right",
-      render: (v: number | null) =>
-        v != null ? `¥${v.toFixed(4)}` : <Text type="warning">待补充</Text>,
+      render: (_: unknown, record: DavStockOut) => {
+        if (record.manual_eps != null)
+          return `¥${record.manual_eps.toFixed(4)}`;
+        if (record.auto_eps != null)
+          return (
+            <span>
+              ¥{record.auto_eps.toFixed(4)}
+              <Text type="secondary" style={{ fontSize: 11, marginLeft: 3 }}>(自动)</Text>
+            </span>
+          );
+        return <Text type="warning">待补充</Text>;
+      },
     },
     {
       title: "预期股息率",
@@ -409,9 +435,11 @@ export default function DavPage() {
           style={{ marginBottom: 0 }}
           size="small"
         />
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
-          添加股票
-        </Button>
+        <Space>
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
+            添加股票
+          </Button>
+        </Space>
       </div>
 
       {/* 数据表 */}
