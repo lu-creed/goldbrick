@@ -50,6 +50,7 @@ import {
   type TradeChartOut,
 } from "../api/client";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -138,6 +139,7 @@ function TradeDetailDrawer({
   const chartInst = useRef<echarts.ECharts | null>(null);
   const [loading,   setLoading]   = useState(false);
   const [chartData, setChartData] = useState<TradeChartOut | null>(null);
+  const isMobile = useIsMobile();
 
   // 每次打开或切换交易时拉数据
   useEffect(() => {
@@ -287,7 +289,7 @@ function TradeDetailDrawer({
       open={open}
       onClose={onClose}
       afterOpenChange={(vis) => { if (!vis) onAfterClose?.(); }}
-      width={860}
+      width={Math.min(860, window.innerWidth * 0.95)}
       styles={{ body: { padding: "12px 16px", background: "#141414" } }}
     >
       {trade && params && (
@@ -345,13 +347,13 @@ function TradeDetailDrawer({
           <div style={{ background: "#0d0d0d", borderRadius: 6, padding: "8px 4px" }}>
             <Spin spinning={loading} tip="加载图表...">
               {chartData ? (
-                <div ref={chartRef} style={{ width: "100%", height: 440 }} />
+                <div ref={chartRef} style={{ width: "100%", height: isMobile ? 280 : 440 }} />
               ) : !loading ? (
-                <div style={{ height: 440, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <div style={{ height: isMobile ? 280 : 440, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Text type="secondary">暂无数据</Text>
                 </div>
               ) : (
-                <div style={{ height: 440 }} />
+                <div style={{ height: isMobile ? 280 : 440 }} />
               )}
             </Spin>
             <div style={{ paddingLeft: 8, marginTop: 2 }}>
@@ -381,6 +383,7 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
   const chartRef     = useRef<HTMLDivElement>(null);
   const chartInst    = useRef<echarts.ECharts | null>(null);
   const scrollYRef   = useRef(0);
+  const isMobile = useIsMobile();
   const [selectedTrade, setSelectedTrade]   = useState<BacktestTradeRow | null>(null);
   const [tradeDrawerOpen, setTradeDrawerOpen] = useState(false);
 
@@ -622,7 +625,7 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
 
             {/* 资金曲线（总权益 + 回撤率双轴） */}
             <Card title={<Space><LineChartOutlined /><span>资金曲线</span></Space>}>
-              <div ref={chartRef} style={{ width: "100%", height: 400 }} />
+              <div ref={chartRef} style={{ width: "100%", height: isMobile ? 260 : 400 }} />
             </Card>
 
             {/* 交易记录明细 */}
@@ -643,7 +646,7 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
                 dataSource={result.trades}
                 rowClassName={zebraRowClass}
                 pagination={{ pageSize: 50, showSizeChanger: true }}
-                scroll={{ x: 800 }}
+                scroll={{ x: "max-content" }}
                 onRow={(row) => ({
                   style: { cursor: "pointer" },
                   onClick: () => { scrollYRef.current = window.scrollY; setSelectedTrade(row); setTradeDrawerOpen(true); },
@@ -697,6 +700,7 @@ function CompareDrawer({ open, onClose, records }: CompareDrawerProps) {
   const chartInst = useRef<echarts.ECharts | null>(null);
   const [details, setDetails] = useState<(BacktestRecordDetail | null)[]>([]);
   const [loading, setLoading] = useState(false);
+  const isMobile = useIsMobile();
 
   // 每次打开时并发加载所有选中记录的详情（含资金曲线数据）
   useEffect(() => {
@@ -1143,7 +1147,7 @@ export default function BacktestHistoryPage() {
             showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条记录`,
           }}
-          scroll={{ x: 1100 }}
+          scroll={{ x: "max-content" }}
           locale={{ emptyText: "暂无回测记录，请先在「开始回测」页面执行一次回测" }}
           onRow={(r) => ({
             style: { cursor: "pointer" },

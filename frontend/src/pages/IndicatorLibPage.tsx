@@ -491,7 +491,7 @@ export default function IndicatorLibPage() {
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         onOk={() => void submitModal()}
-        width={920}
+        width={Math.min(920, window.innerWidth * 0.95)}
         destroyOnClose
         styles={{ body: { maxHeight: "75vh", overflow: "auto" } }}
       >

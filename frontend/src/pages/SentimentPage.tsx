@@ -28,6 +28,7 @@ import { InfoCircleOutlined, FireOutlined, FundOutlined } from "@ant-design/icon
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchSentimentTrend, getApiErrorMessage, type SentimentTrendPoint } from "../api/client";
 import { ECHARTS_BASE_OPTION, RISE_COLOR } from "../constants/theme";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const { Title, Text } = Typography;
 
@@ -44,6 +45,7 @@ export default function SentimentPage() {
   const [days, setDays] = useState(60);
   const [loading, setLoading] = useState(false);
   const [points, setPoints] = useState<SentimentTrendPoint[]>([]);
+  const isMobile = useIsMobile();
 
   // 三个图表的容器 ref
   const scoreChartRef  = useRef<HTMLDivElement>(null);
@@ -355,7 +357,7 @@ export default function SentimentPage() {
               </Space>
             }
           >
-            <div ref={scoreChartRef} style={{ width: "100%", height: 240 }} />
+            <div ref={scoreChartRef} style={{ width: "100%", height: isMobile ? 180 : 240 }} />
           </Card>
 
           <Row gutter={16}>
@@ -371,7 +373,7 @@ export default function SentimentPage() {
                   </Space>
                 }
               >
-                <div ref={limitChartRef} style={{ width: "100%", height: 260 }} />
+                <div ref={limitChartRef} style={{ width: "100%", height: isMobile ? 180 : 260 }} />
               </Card>
             </Col>
             {/* 涨跌家数分布 */}
@@ -386,7 +388,7 @@ export default function SentimentPage() {
                   </Space>
                 }
               >
-                <div ref={adChartRef} style={{ width: "100%", height: 260 }} />
+                <div ref={adChartRef} style={{ width: "100%", height: isMobile ? 180 : 260 }} />
               </Card>
             </Col>
           </Row>

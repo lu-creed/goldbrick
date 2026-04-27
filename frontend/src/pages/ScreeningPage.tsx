@@ -162,7 +162,7 @@ function StockTable({ items, watchlistProps }: { items: ScreeningStockRow[]; wat
       dataSource={items}
       rowClassName={zebraRowClass}
       pagination={{ pageSize: 50, showSizeChanger: true }}
-      scroll={{ x: 640 }}
+      scroll={{ x: "max-content" }}
     />
   );
 }
@@ -624,7 +624,7 @@ export default function ScreeningPage() {
                     showSizeChanger: false,
                     showTotal: (t) => `共 ${t} 条记录`,
                   }}
-                  scroll={{ x: 700 }}
+                  scroll={{ x: "max-content" }}
                   locale={{ emptyText: "暂无历史记录，执行一次选股后自动保存" }}
                 />
               </Card>
@@ -642,7 +642,7 @@ export default function ScreeningPage() {
         }
         open={detailOpen}
         onClose={() => setDetailOpen(false)}
-        width={860}
+        width={Math.min(860, window.innerWidth * 0.95)}
         extra={
           // "套用此条件"按钮：将历史参数填回表单，方便用户在此基础上微调重跑
           detailRecord ? (

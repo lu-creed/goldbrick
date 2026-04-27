@@ -544,7 +544,7 @@ export default function DataCenterPage() {
               }
             },
           }}
-          scroll={{ x: 1100 }}
+          scroll={{ x: "max-content" }}
         />
       </Card>
 
@@ -552,7 +552,7 @@ export default function DataCenterPage() {
         title="从 Tushare 选择指数加入数据后台"
         open={indexModalOpen}
         onCancel={() => setIndexModalOpen(false)}
-        width={900}
+        width={Math.min(900, window.innerWidth * 0.95)}
         okText="加入数据后台"
         confirmLoading={indexSubmitting}
         onOk={() => void submitIndexSelection()}
@@ -604,7 +604,7 @@ export default function DataCenterPage() {
         title={dailyCode ? `日线明细 · ${dailyCode}${dailyName ? ` ${dailyName}` : ""}` : "日线明细"}
         open={dailyOpen}
         onCancel={() => setDailyOpen(false)}
-        width={960}
+        width={Math.min(960, window.innerWidth * 0.95)}
         footer={null}
         destroyOnClose
       >
@@ -637,7 +637,7 @@ export default function DataCenterPage() {
               if (ps) setDailyPageSize(ps);
             },
           }}
-          scroll={{ x: 860 }}
+          scroll={{ x: "max-content" }}
         />
       </Modal>
     </Space>

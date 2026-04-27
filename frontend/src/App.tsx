@@ -10,9 +10,11 @@
  * 当用户点击菜单或浏览器地址栏变化时，<Routes> 会根据当前 URL
  * 找到匹配的 <Route>，然后渲染对应的页面组件。
  */
-import { Checkbox, Layout, Menu, Modal, Typography, theme } from "antd";
+import { Checkbox, Drawer, Layout, Menu, Modal, Typography, theme } from "antd";
+import { MenuOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { useIsMobile } from "./hooks/useIsMobile";
 import DataCenterPage from "./pages/DataCenterPage";
 import IndicatorLibPage from "./pages/IndicatorLibPage";
 import KlinePage from "./pages/KlinePage";
@@ -26,6 +28,7 @@ import BacktestPage from "./pages/BacktestPage";
 import BacktestHistoryPage from "./pages/BacktestHistoryPage";
 import DavPage from "./pages/DavPage";
 import LoginPage from "./pages/LoginPage";
+import UserManagementPage from "./pages/UserManagementPage";
 import { UserInfo, fetchCurrentUser } from "./api/client";
 
 const { Header, Content, Footer } = Layout;
@@ -55,6 +58,7 @@ function menuSelectedKeys(loc: { pathname: string; hash: string }): string[] {
   if (pathname === "/dav") return ["m-dav"];
   if (pathname === "/backtest/history") return ["m-backtest-records"];
   if (pathname === "/backtest") return ["m-backtest-start"];
+  if (pathname === "/admin/users") return ["m-user-mgmt"];
   if (pathname === "/") return ["m-kline"];
   return ["m-kline"];
 }
@@ -116,6 +120,8 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
   const { token } = theme.useToken();
   // 计算当前应该高亮哪个菜单项
   const selected = menuSelectedKeys(location);
+  const isMobile = useIsMobile();
+  const [navDrawerOpen, setNavDrawerOpen] = useState(false);
 
   // ── 首次访问免责声明 Modal ─────────────────────────────────
   // localStorage 里存了标志位时说明用户已阅读过，不再弹窗
@@ -130,6 +136,53 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
     setDisclaimerOpen(false);
   }
 
+  // 构建菜单 items（桌面 Menu 和移动 Drawer 共用同一份）
+  const menuItems = [
+    ...(currentUser.is_admin ? [{
+      key: "g-backend",
+      label: "数据后台",
+      children: [
+        { key: "m-data-sync", label: <Link to="/sync" onClick={() => setNavDrawerOpen(false)}>数据同步</Link> },
+        { key: "m-data-pool", label: <Link to="/data-center" onClick={() => setNavDrawerOpen(false)}>数据池</Link> },
+        { key: "m-sync-logs", label: <Link to="/sync#sync-runs" onClick={() => setNavDrawerOpen(false)}>同步日志</Link> },
+      ],
+    }] : []),
+    {
+      key: "g-dashboard",
+      label: "数据看板",
+      children: [
+        { key: "m-replay",    label: <Link to="/replay" onClick={() => setNavDrawerOpen(false)}>股票复盘</Link> },
+        { key: "m-watchlist", label: <Link to="/watchlist" onClick={() => setNavDrawerOpen(false)}>自选股池</Link> },
+        { key: "m-dav",       label: <Link to="/dav" onClick={() => setNavDrawerOpen(false)}>大V看板</Link> },
+        { key: "m-stock-list", label: <Link to="/stock-list" onClick={() => setNavDrawerOpen(false)}>个股列表</Link> },
+        { key: "m-kline",     label: <Link to="/" onClick={() => setNavDrawerOpen(false)}>K 线</Link> },
+      ],
+    },
+    {
+      key: "g-screen",
+      label: "条件选股",
+      children: [
+        { key: "m-indicators", label: <Link to="/indicators" onClick={() => setNavDrawerOpen(false)}>指标库</Link> },
+        { key: "m-screening", label: <Link to="/screening" onClick={() => setNavDrawerOpen(false)}>条件选股</Link> },
+      ],
+    },
+    {
+      key: "g-backtest",
+      label: "股票回测",
+      children: [
+        { key: "m-backtest-start", label: <Link to="/backtest" onClick={() => setNavDrawerOpen(false)}>开始回测</Link> },
+        { key: "m-backtest-records", label: <Link to="/backtest/history" onClick={() => setNavDrawerOpen(false)}>回测记录</Link> },
+      ],
+    },
+    ...(currentUser.is_admin ? [{
+      key: "g-admin",
+      label: "系统管理",
+      children: [
+        { key: "m-user-mgmt", label: <Link to="/admin/users" onClick={() => setNavDrawerOpen(false)}>用户管理</Link> },
+      ],
+    }] : []),
+  ];
+
   return (
     // Layout 是整页布局容器，minHeight: "100vh" 确保页面至少占满整个屏幕高度
     <Layout style={{ minHeight: "100vh" }}>
@@ -139,77 +192,39 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
         style={{
           display: "flex",
           alignItems: "center",
-          // 使用主题的容器背景色（暗色主题下是深灰色）
           background: token.colorBgContainer,
-          // 底部边框线，视觉上把导航栏和内容区分开
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
-          // 固定高度，防止因内容变化导致布局抖动
-          padding: "0 24px",
-          position: "sticky", // 固定在顶部，滚动时不消失
+          padding: isMobile ? "0 12px" : "0 24px",
+          position: "sticky",
           top: 0,
-          zIndex: 100,        // 确保在其他内容上方
+          zIndex: 100,
         }}
       >
         {/* 应用名称 */}
-        <div style={{ marginRight: 32, fontWeight: 700, fontSize: 16, color: token.colorPrimary }}>
+        <div style={{ marginRight: isMobile ? 8 : 32, fontWeight: 700, fontSize: 16, color: token.colorPrimary, flexShrink: 0 }}>
           GoldBrick
         </div>
 
-        {/*
-          顶部横向菜单
-          - mode="horizontal"：水平排列
-          - selectedKeys：高亮当前所在页面的菜单项
-          - items：菜单结构（支持分组和子菜单）
-        */}
-        <Menu
-          mode="horizontal"
-          selectedKeys={selected}
-          style={{ flex: 1, minWidth: 0, border: "none", background: "transparent" }}
-          items={[
-            {
-              key: "g-backend",
-              label: "数据后台",
-              children: [
-                { key: "m-data-sync", label: <Link to="/sync">数据同步</Link> },
-                { key: "m-data-pool", label: <Link to="/data-center">数据池</Link> },
-                { key: "m-sync-logs", label: <Link to="/sync#sync-runs">同步日志</Link> },
-              ],
-            },
-            {
-              key: "g-dashboard",
-              label: "数据看板",
-              children: [
-                { key: "m-replay",    label: <Link to="/replay">股票复盘</Link> },
-                { key: "m-watchlist", label: <Link to="/watchlist">自选股池</Link> },
-                { key: "m-dav",       label: <Link to="/dav">大V看板</Link> },
-                { key: "m-stock-list", label: <Link to="/stock-list">个股列表</Link> },
-                { key: "m-kline",     label: <Link to="/">K 线</Link> },
-              ],
-            },
-            {
-              key: "g-screen",
-              label: "条件选股",
-              children: [
-                { key: "m-indicators", label: <Link to="/indicators">指标库</Link> },
-                { key: "m-screening", label: <Link to="/screening">条件选股</Link> },
-              ],
-            },
-            {
-              key: "g-backtest",
-              label: "股票回测",
-              children: [
-                { key: "m-backtest-start", label: <Link to="/backtest">开始回测</Link> },
-                { key: "m-backtest-records", label: <Link to="/backtest/history">回测记录</Link> },
-              ],
-            },
-          ]}
-        />
+        {/* 桌面端：水平菜单 */}
+        {!isMobile && (
+          <Menu
+            mode="horizontal"
+            selectedKeys={selected}
+            style={{ flex: 1, minWidth: 0, border: "none", background: "transparent" }}
+            items={menuItems}
+          />
+        )}
 
-        {/* 当前用户 + 登出按钮 */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginLeft: 16, flexShrink: 0 }}>
-          <Text style={{ fontSize: 13, color: token.colorTextSecondary }}>
-            {currentUser.username}{currentUser.is_admin ? "（管理员）" : ""}
-          </Text>
+        {/* 移动端：占位撑开空间 */}
+        {isMobile && <div style={{ flex: 1 }} />}
+
+        {/* 当前用户 + 登出 */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: isMobile ? 0 : 16, flexShrink: 0 }}>
+          {!isMobile && (
+            <Typography.Text style={{ fontSize: 13, color: token.colorTextSecondary }}>
+              {currentUser.username}{currentUser.is_admin ? "（管理员）" : ""}
+            </Typography.Text>
+          )}
           <button
             onClick={onLogout}
             style={{
@@ -224,15 +239,58 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
           >
             退出
           </button>
+
+          {/* 移动端汉堡按钮 */}
+          {isMobile && (
+            <button
+              onClick={() => setNavDrawerOpen(true)}
+              style={{
+                background: "none",
+                border: `1px solid ${token.colorBorderSecondary}`,
+                borderRadius: 4,
+                color: token.colorText,
+                cursor: "pointer",
+                fontSize: 16,
+                padding: "2px 8px",
+                lineHeight: 1,
+                display: "flex",
+                alignItems: "center",
+              }}
+            >
+              <MenuOutlined />
+            </button>
+          )}
         </div>
       </Header>
+
+      {/* 移动端导航 Drawer */}
+      <Drawer
+        title={
+          <span style={{ fontSize: 14 }}>
+            {currentUser.username}{currentUser.is_admin ? "（管理员）" : ""}
+          </span>
+        }
+        placement="right"
+        open={navDrawerOpen}
+        onClose={() => setNavDrawerOpen(false)}
+        width={240}
+        styles={{ body: { padding: 0 } }}
+      >
+        <Menu
+          mode="inline"
+          selectedKeys={selected}
+          defaultOpenKeys={["g-dashboard", "g-screen", "g-backtest", "g-backend", "g-admin"]}
+          style={{ border: "none", height: "100%" }}
+          items={menuItems}
+        />
+      </Drawer>
 
       {/* ── 页面内容区域 ─────────────────────────────────────── */}
       <Content
         style={{
-          padding: 24,
-          background: token.colorBgLayout, // 内容区背景（比卡片背景略暗）
-          minHeight: "calc(100vh - 64px - 56px)", // 减去 Header 和 Footer 高度
+          padding: isMobile ? 12 : 24,
+          background: token.colorBgLayout,
+          minHeight: "calc(100vh - 64px - 56px)",
         }}
       >
         {/*
@@ -262,6 +320,8 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
             {/* 回测功能 */}
             <Route path="/backtest" element={<BacktestPage />} />
             <Route path="/backtest/history" element={<BacktestHistoryPage />} />
+            {/* 系统管理（仅管理员可访问） */}
+            <Route path="/admin/users" element={<UserManagementPage currentUser={currentUser} />} />
             {/* 兜底：任何未知 URL 都跳回首页 */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -302,7 +362,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
         okButtonProps={{ disabled: !disclaimerChecked }}
         cancelButtonProps={{ style: { display: "none" } }}
         onOk={handleDisclaimerOk}
-        width={540}
+        width={Math.min(540, window.innerWidth * 0.95)}
       >
         <div style={{ fontSize: 14, lineHeight: 1.8, color: "#d9d9d9" }}>
           <p style={{ marginBottom: 12 }}>

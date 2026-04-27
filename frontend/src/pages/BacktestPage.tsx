@@ -59,6 +59,7 @@ import {
   type UserIndicatorOut,
 } from "../api/client";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -292,7 +293,7 @@ function TemplatePanel({ open, onClose, onApply }: TemplatePanelProps) {
       open={open}
       onCancel={onClose}
       footer={null}
-      width={700}
+      width={Math.min(700, window.innerWidth * 0.95)}
     >
       <div style={{ marginBottom: 12 }}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -364,6 +365,7 @@ function TradeDetailDrawer({ open, onClose, onAfterClose, trade, params, startDa
   const chartInst = useRef<echarts.ECharts | null>(null);
   const [loading, setLoading] = useState(false);
   const [chartData, setChartData] = useState<TradeChartOut | null>(null);
+  const isMobile = useIsMobile();
 
   // 每次打开或切换 trade 时重新拉数据
   useEffect(() => {
@@ -546,7 +548,7 @@ function TradeDetailDrawer({ open, onClose, onAfterClose, trade, params, startDa
       open={open}
       onClose={onClose}
       afterOpenChange={(vis) => { if (!vis) onAfterClose?.(); }}
-      width={860}
+      width={Math.min(860, window.innerWidth * 0.95)}
       styles={{ body: { padding: "12px 16px", background: "#141414" } }}
     >
       {trade && params && (
@@ -609,13 +611,13 @@ function TradeDetailDrawer({ open, onClose, onAfterClose, trade, params, startDa
           <div style={{ background: "#0d0d0d", borderRadius: 6, padding: "8px 4px" }}>
             <Spin spinning={loading} tip="加载图表...">
               {chartData ? (
-                <div ref={chartRef} style={{ width: "100%", height: 440 }} />
+                <div ref={chartRef} style={{ width: "100%", height: isMobile ? 280 : 440 }} />
               ) : !loading ? (
-                <div style={{ height: 440, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <div style={{ height: isMobile ? 280 : 440, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Text type="secondary">暂无数据</Text>
                 </div>
               ) : (
-                <div style={{ height: 440 }} />
+                <div style={{ height: isMobile ? 280 : 440 }} />
               )}
             </Spin>
             <div style={{ paddingLeft: 8, marginTop: 2 }}>
@@ -632,6 +634,7 @@ function TradeDetailDrawer({ open, onClose, onAfterClose, trade, params, startDa
 
 export default function BacktestPage() {
   const [form] = Form.useForm();
+  const isMobile = useIsMobile();
 
   // 从选股页跳转过来时，location.state 中携带选股条件，自动预填表单
   const location = useLocation();
@@ -1404,7 +1407,7 @@ export default function BacktestPage() {
               </Space>
             }
           >
-            <div ref={chartRef} style={{ width: "100%", height: 440 }} />
+            <div ref={chartRef} style={{ width: "100%", height: isMobile ? 280 : 440 }} />
           </Card>
 
           {/* 交易记录 */}
@@ -1425,7 +1428,7 @@ export default function BacktestPage() {
               dataSource={result.trades}
               rowClassName={zebraRowClass}
               pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 笔` }}
-              scroll={{ x: 900 }}
+              scroll={{ x: "max-content" }}
               onRow={(row) => ({
                 style: { cursor: "pointer" },
                 onClick: () => { scrollYRef.current = window.scrollY; setSelectedTrade(row); setDrawerOpen(true); },

@@ -26,6 +26,7 @@ import {
   getApiErrorMessage,
 } from "../api/client";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, MA_COLORS, RISE_COLOR } from "../constants/theme";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 /** K 线周期选项列表（周期值与后端接口对应） */
 const intervals: { label: string; value: Interval }[] = [
@@ -85,6 +86,8 @@ export default function KlinePage() {
   const [error, setError] = useState<string | null>(null);
   // chartWidth：图表当前宽度（单位像素），用于自适应坐标轴左边距
   const [chartWidth, setChartWidth] = useState(980);
+  const isMobile = useIsMobile();
+  const chartHeight = isMobile ? 320 : 520;
 
   // 主图指标参数
   const [mainIndicator, setMainIndicator] = useState<MainIndicator>("none");
@@ -370,7 +373,7 @@ export default function KlinePage() {
     const dzStart = zoom?.start ?? 70; // 默认显示最后 30% 的数据
     const dzEnd = zoom?.end ?? 100;
     // 左边距随图表宽度自适应，避免 Y 轴标签被截断
-    const dynamicLeft = chartWidth < 700 ? 92 : chartWidth < 960 ? 82 : 72;
+    const dynamicLeft = chartWidth < 400 ? 100 : chartWidth < 700 ? 92 : chartWidth < 960 ? 82 : 72;
 
     const category = bars.map((b) => b.time);
     // ECharts 蜡烛图数据格式：[open, close, low, high]（注意顺序）
@@ -910,7 +913,7 @@ export default function KlinePage() {
             />
           ) : null}
           {/* ECharts 绘图容器：宽 100%，高固定 520px */}
-          <div ref={chartRef} style={{ width: "100%", height: 520 }} />
+          <div ref={chartRef} style={{ width: "100%", height: chartHeight }} />
         </div>
       </Card>
     </Space>

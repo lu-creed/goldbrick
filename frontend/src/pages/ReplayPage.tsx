@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { type ReplayDailyOut, fetchReplayDaily, getApiErrorMessage } from "../api/client";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR } from "../constants/theme";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const { Text } = Typography;
 
@@ -55,6 +56,7 @@ function indexCardBackground(
 export default function ReplayPage() {
   // token 用于读取 Ant Design 当前主题颜色，确保卡片边框等颜色与主题一致
   const { token } = theme.useToken();
+  const isMobile = useIsMobile();
   // navigate 用于点击指数卡片后跳转到 K 线页
   const navigate = useNavigate();
 
@@ -423,7 +425,7 @@ export default function ReplayPage() {
               <Skeleton active paragraph={{ rows: 6 }} />
             ) : (
               /* bucketRef 指向的 div 就是 ECharts 的绘图容器 */
-              <div ref={bucketRef} style={{ height: 320 }} />
+              <div ref={bucketRef} style={{ height: isMobile ? 240 : 320 }} />
             )}
           </Card>
         </Col>
@@ -449,7 +451,7 @@ export default function ReplayPage() {
             {loading ? (
               <Skeleton active paragraph={{ rows: 8 }} />
             ) : (
-              <div ref={scatterRef} style={{ height: 400 }} />
+              <div ref={scatterRef} style={{ height: isMobile ? 300 : 400 }} />
             )}
           </Card>
         </Col>

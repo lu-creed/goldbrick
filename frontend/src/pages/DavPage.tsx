@@ -30,6 +30,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
+import { useIsMobile } from "../hooks/useIsMobile";
 import {
   DavSearchItem,
   DavStockIn,
@@ -338,6 +339,7 @@ export default function DavPage() {
   const [tab, setTab] = useState("all");
   const [modalOpen, setModalOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<DavStockOut | null>(null);
+  const isMobile = useIsMobile();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -382,7 +384,7 @@ export default function DavPage() {
   });
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+    <div style={{ maxWidth: 1200, margin: "0 auto", padding: isMobile ? "0 4px" : 0 }}>
       {/* 页头 */}
       <div style={{ marginBottom: 16, display: "flex", alignItems: "baseline", gap: 12 }}>
         <Title level={4} style={{ margin: 0 }}>大V看板</Title>
