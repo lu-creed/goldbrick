@@ -14,13 +14,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth import create_access_token, get_current_admin, get_current_user, get_password_hash, verify_password
+from app.config import settings
 from app.database import get_db
 from app.models import AppSetting, User
+from app.security import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -73,8 +75,13 @@ class RegistrationSettingIn(BaseModel):
 # ── 路由 ─────────────────────────────────────────────────────────────────────
 
 @router.post("/login", response_model=TokenOut)
-def login(body: LoginIn, db: Session = Depends(get_db)):
-    """用户名 + 密码登录，返回 JWT Bearer Token。"""
+@limiter.limit(settings.rate_limit_login)
+def login(request: Request, body: LoginIn, db: Session = Depends(get_db)):
+    """用户名 + 密码登录，返回 JWT Bearer Token。
+
+    防暴力破解：限流按客户端 IP 计，默认 5/min（由 settings.rate_limit_login 控制）。
+    未开启限流时 request 参数仍然保留（slowapi 装饰器的签名要求）。
+    """
     user = db.query(User).filter(User.username == body.username).first()
     if not user or not verify_password(body.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
@@ -84,8 +91,12 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
-def register(body: RegisterIn, db: Session = Depends(get_db)):
-    """开放注册（仅当管理员已开启 allow_registration 时可用）。"""
+@limiter.limit(settings.rate_limit_login)
+def register(request: Request, body: RegisterIn, db: Session = Depends(get_db)):
+    """开放注册（仅当管理员已开启 allow_registration 时可用）。
+
+    同 login：限流防刷。未开启限流时 no-op。
+    """
     setting = db.query(AppSetting).filter(AppSetting.key == _ALLOW_REGISTRATION_KEY).first()
     if not setting or setting.value != "true":
         raise HTTPException(status_code=403, detail="注册功能未开放，请联系管理员创建账号")

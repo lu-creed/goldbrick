@@ -38,6 +38,20 @@ class Settings(BaseSettings):
     admin_username: str = "admin"
     admin_password: str = "admin123"
 
+    # ── 安全与限流（0.0.4-dev）────────────────────────────────
+    # 关闭后所有限流/白名单中间件都不生效（本地开发默认关闭；公测/上线务必打开）
+    rate_limit_enabled: bool = False
+    # 默认限流（作用于带 @limiter.limit 装饰的路由）；格式为 "次数/时间窗口"，例：10/minute、100/hour
+    rate_limit_default: str = "60/minute"
+    # 登录限流：防暴力破解，独立更严
+    rate_limit_login: str = "5/minute"
+    # 全站 IP 白名单：逗号分隔，空字符串表示不启用（允许所有 IP）。命中后仍要过 JWT。
+    # 例：IP_WHITELIST=127.0.0.1,10.0.0.0/8,100.64.0.0/10
+    ip_whitelist: str = ""
+    # 管理员端点 IP 白名单：独立一套，仅保护 /api/sync/*、/api/admin-tushare/*、/api/auto-update/* 等
+    # 空则复用 ip_whitelist；两者都空则完全放开
+    admin_ip_whitelist: str = ""
+
 
 def get_backend_root() -> Path:
     """返回 backend/ 目录的绝对路径（即包含 app 包的上一级目录）。

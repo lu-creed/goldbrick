@@ -28,6 +28,7 @@ from app.api.backtest import router as backtest_router
 from app.api.dav import router as dav_router
 from app.api.watchlist import router as watchlist_router
 from app.api.auto_update import router as auto_update_router
+from app.api.strategies import router as strategies_router
 from app.database import (
     Base,
     SessionLocal,
@@ -38,11 +39,14 @@ from app.database import (
     ensure_user_indicators_definition_json_column,
     ensure_screening_history_table,
     ensure_backtest_records_table,
+    ensure_backtest_records_columns,
+    ensure_strategy_snapshot_columns,
     ensure_dav_auto_fundamental_columns,
     migrate_for_user_system,
     ensure_default_admin_user,
 )
 from app.scheduler import shutdown_scheduler, start_scheduler
+from app.security import install_security
 from app.services.sync_runner import ensure_default_sync_job
 from app.services.indicator_seed import seed_indicators
 from app.services.user_indicator_seed import ensure_default_user_indicators
@@ -81,6 +85,8 @@ async def lifespan(app: FastAPI):
     ensure_user_indicators_definition_json_column()
     ensure_screening_history_table()   # 确保 screening_history 表已创建
     ensure_backtest_records_table()    # 确保 backtest_records 表已创建
+    ensure_backtest_records_columns()  # 为老 backtest_records 追加 0.0.4-dev 成本/成交/基准列
+    ensure_strategy_snapshot_columns()  # 为 screening_history / backtest_records 追加多条件策略快照列
     ensure_dav_auto_fundamental_columns()  # 为 dav_stock_watch 追加自动填充字段
     # 4. 确保 sync_jobs 表里至少有一条默认定时任务记录
     db = SessionLocal()
@@ -106,6 +112,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="GoldBrick API", version="0.0.2-dev", lifespan=lifespan)
+
+# 安全：API 限流 + IP 白名单（未启用时是 no-op，详见 app/security.py）
+install_security(app)
 
 # CORS（跨域资源共享）：允许前端（本地 5173 端口）向后端发请求
 # 本地开发时前端跑在 localhost:5173，后端跑在 localhost:8000，端口不同需要开放 CORS
@@ -139,6 +148,7 @@ app.include_router(backtest_router, prefix="/api")             # 全市场条件
 app.include_router(dav_router, prefix="/api")                  # 大V看板（ABCD分类 + 预期股息率）
 app.include_router(watchlist_router, prefix="/api")            # 自选股池（轻量收藏）
 app.include_router(auto_update_router, prefix="/api")          # 管理：GitHub 自动更新状态/配置/日志
+app.include_router(strategies_router, prefix="/api")           # 多条件策略：CRUD（选股/回测共用）
 
 
 @app.get("/api/health")
