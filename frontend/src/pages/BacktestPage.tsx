@@ -229,6 +229,246 @@ function fmtMoney(v: number) {
   return v.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/**
+ * 多条件回测表单：买/卖各一列 Form.List + 单独 AND/OR 切换。
+ *
+ * 与单条件模式共享同一 Card 容器但使用独立 multiForm 实例。
+ * 提交时由父组件 onRun 调用 multiForm.validateFields() 并组装 buy_logic/sell_logic。
+ */
+function MultiBacktestForm({
+  multiForm,
+  indicators,
+  running,
+  onRun,
+}: {
+  multiForm: ReturnType<typeof Form.useForm>[0];
+  indicators: UserIndicatorOut[];
+  running: boolean;
+  onRun: () => void;
+}) {
+  return (
+    <Form
+      form={multiForm}
+      layout="vertical"
+      initialValues={{
+        date_range: [dayjs().subtract(1, "year"), dayjs()],
+        initial_capital: 100000,
+        max_positions: 3,
+        max_scan: 3000,
+        commission_rate: 0.00025,
+        commission_min: 5,
+        stamp_duty_rate: 0.001,
+        slippage_bps: 10,
+        lot_size: 100,
+        execution_price: "next_open",
+        benchmark_index: "000300.SH",
+        buy_logic_combiner: "AND",
+        sell_logic_combiner: "AND",
+        buy_primary_idx: 0,
+        buy_conditions: [{ compare_op: "gt", threshold: 0 }],
+        sell_conditions: [{ compare_op: "lt", threshold: 0 }],
+      }}
+    >
+      <Row gutter={[16, 0]}>
+        <Col xs={24} md={8}>
+          <Form.Item name="date_range" label="回测时间范围" rules={[{ required: true, message: "请选择时间范围" }]}>
+            <DatePicker.RangePicker style={{ width: "100%" }} />
+          </Form.Item>
+        </Col>
+        <Col xs={12} md={4}>
+          <Form.Item name="initial_capital" label="初始资金（元）">
+            <InputNumber
+              min={1000} step={10000}
+              formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+        </Col>
+        <Col xs={12} md={4}>
+          <Form.Item name="max_positions" label="最大持仓（只）">
+            <InputNumber min={1} max={10} style={{ width: "100%" }} />
+          </Form.Item>
+        </Col>
+        <Col xs={12} md={4}>
+          <Form.Item name="max_scan" label="扫描只数" tooltip="每日最多扫描的股票数，越大越慢">
+            <InputNumber min={100} max={8000} step={500} style={{ width: "100%" }} />
+          </Form.Item>
+        </Col>
+        <Col xs={24} md={4} style={{ display: "flex", alignItems: "flex-end" }}>
+          <Form.Item style={{ marginBottom: 24, width: "100%" }}>
+            <Button type="primary" onClick={onRun} loading={running} block>
+              {running ? "回测中…" : "开始回测"}
+            </Button>
+          </Form.Item>
+        </Col>
+      </Row>
+
+      <Divider style={{ margin: "8px 0 16px" }} />
+
+      {/* 买入条件区 */}
+      <div style={{ marginBottom: 24 }}>
+        <Space size="middle" style={{ marginBottom: 8 }}>
+          <Text strong style={{ color: "#52c41a" }}>买入条件</Text>
+          <Form.Item name="buy_logic_combiner" style={{ marginBottom: 0 }}>
+            <Segmented options={[{ label: "全部满足 (AND)", value: "AND" }, { label: "任一满足 (OR)", value: "OR" }]} />
+          </Form.Item>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            勾选"主排序"的条件决定建仓排序（指标值降序）
+          </Text>
+        </Space>
+        <Form.Item name="buy_primary_idx" noStyle>
+          <Radio.Group style={{ width: "100%" }}>
+            <Form.List name="buy_conditions">
+              {(fields, { add, remove }) => (
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  {fields.map((field, idx) => (
+                    <MultiCondRowCard
+                      key={field.key}
+                      field={field}
+                      idx={idx}
+                      indicators={indicators}
+                      multiForm={multiForm}
+                      listName="buy_conditions"
+                      showPrimary
+                      canRemove={fields.length > 1}
+                      onRemove={() => remove(field.name)}
+                    />
+                  ))}
+                  <Button
+                    type="dashed"
+                    block
+                    icon={<PlusOutlined />}
+                    onClick={() => add({ compare_op: "gt", threshold: 0 })}
+                  >
+                    添加买入条件
+                  </Button>
+                </Space>
+              )}
+            </Form.List>
+          </Radio.Group>
+        </Form.Item>
+      </div>
+
+      {/* 卖出条件区 */}
+      <div style={{ marginBottom: 24 }}>
+        <Space size="middle" style={{ marginBottom: 8 }}>
+          <Text strong style={{ color: "#f5222d" }}>卖出条件</Text>
+          <Form.Item name="sell_logic_combiner" style={{ marginBottom: 0 }}>
+            <Segmented options={[{ label: "全部满足 (AND)", value: "AND" }, { label: "任一满足 (OR)", value: "OR" }]} />
+          </Form.Item>
+        </Space>
+        <Form.List name="sell_conditions">
+          {(fields, { add, remove }) => (
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              {fields.map((field, idx) => (
+                <MultiCondRowCard
+                  key={field.key}
+                  field={field}
+                  idx={idx}
+                  indicators={indicators}
+                  multiForm={multiForm}
+                  listName="sell_conditions"
+                  showPrimary={false}
+                  canRemove={fields.length > 1}
+                  onRemove={() => remove(field.name)}
+                />
+              ))}
+              <Button
+                type="dashed"
+                block
+                icon={<PlusOutlined />}
+                onClick={() => add({ compare_op: "lt", threshold: 0 })}
+              >
+                添加卖出条件
+              </Button>
+            </Space>
+          )}
+        </Form.List>
+      </div>
+
+      {/* 成本与成交模型（与单条件模式共用字段名） */}
+      <Collapse
+        ghost
+        size="small"
+        items={[{
+          key: "cost",
+          label: <Text type="secondary" style={{ fontSize: 12 }}>交易成本与成交模型（可选）</Text>,
+          children: (
+            <Row gutter={[16, 0]}>
+              <Col xs={12} md={3}>
+                <Form.Item name="commission_rate" label="佣金率" tooltip="双边按成交金额收取">
+                  <InputNumber
+                    min={0} max={0.01} step={0.00005}
+                    formatter={(v) => v != null ? `${(Number(v) * 10000).toFixed(2)}‱` : ""}
+                    parser={(s) => {
+                      if (!s) return 0 as never;
+                      const n = Number(String(s).replace(/[^\d.]/g, ""));
+                      return (n / 10000) as never;
+                    }}
+                    style={{ width: "100%" }}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={12} md={3}>
+                <Form.Item name="commission_min" label="每笔最低">
+                  <InputNumber min={0} max={1000} step={1} style={{ width: "100%" }} addonAfter="元" />
+                </Form.Item>
+              </Col>
+              <Col xs={12} md={3}>
+                <Form.Item name="stamp_duty_rate" label="印花税率">
+                  <InputNumber
+                    min={0} max={0.01} step={0.0001}
+                    formatter={(v) => v != null ? `${(Number(v) * 1000).toFixed(2)}‰` : ""}
+                    parser={(s) => {
+                      if (!s) return 0 as never;
+                      const n = Number(String(s).replace(/[^\d.]/g, ""));
+                      return (n / 1000) as never;
+                    }}
+                    style={{ width: "100%" }}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={12} md={3}>
+                <Form.Item name="slippage_bps" label="滑点">
+                  <InputNumber min={0} max={100} step={1} style={{ width: "100%" }} addonAfter="bp" />
+                </Form.Item>
+              </Col>
+              <Col xs={12} md={3}>
+                <Form.Item name="lot_size" label="整手">
+                  <InputNumber min={1} max={10000} step={100} style={{ width: "100%" }} addonAfter="股" />
+                </Form.Item>
+              </Col>
+              <Col xs={12} md={3}>
+                <Form.Item name="execution_price" label="成交价">
+                  <Select
+                    options={[
+                      { value: "close", label: "当日收盘" },
+                      { value: "next_open", label: "次日开盘" },
+                    ]}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={6}>
+                <Form.Item name="benchmark_index" label="基准指数">
+                  <Select
+                    allowClear
+                    placeholder="选择对比基准"
+                    options={[
+                      { value: "000300.SH", label: "沪深 300" },
+                      { value: "000905.SH", label: "中证 500" },
+                      { value: "000001.SH", label: "上证指数" },
+                    ]}
+                  />
+                </Form.Item>
+              </Col>
+            </Row>
+          ),
+        }]}
+      />
+    </Form>
+  );
+}
+
 /** 带符号的百分比格式化 */
 function fmtPct(v: number | null | undefined, precision = 2): string {
   if (v == null) return "—";
@@ -1249,6 +1489,17 @@ export default function BacktestPage() {
         {loadingInd ? (
           <Skeleton active paragraph={{ rows: 3 }} />
         ) : (
+          <>
+            <Segmented
+              value={mode}
+              onChange={(v) => setMode(v as "single" | "multi")}
+              options={[
+                { label: "单条件 / 模板", value: "single" },
+                { label: "多条件 (AND / OR)", value: "multi" },
+              ]}
+              style={{ marginBottom: 16 }}
+            />
+            {mode === "single" ? (
           <Form
             form={form}
             layout="vertical"
@@ -1560,6 +1811,15 @@ export default function BacktestPage() {
               ]}
             />
           </Form>
+            ) : (
+              <MultiBacktestForm
+                multiForm={multiForm}
+                indicators={indicators}
+                running={running}
+                onRun={onRun}
+              />
+            )}
+          </>
         )}
       </Card>
 
