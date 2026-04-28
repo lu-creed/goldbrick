@@ -27,12 +27,19 @@ from app.services.runtime_tokens import get_tushare_token
 log = logging.getLogger(__name__)
 
 _TUSHARE_QUOTA_KEYWORDS = (
-    "权限", "积分", "每分钟最多", "每天最多", "超出限制", "quota", "limit exceeded", "permission",
+    # 中文：Tushare 的业务错误消息常见片段
+    "权限", "积分", "每分钟最多", "每小时最多", "每天最多", "超出限制", "没有调用",
+    # 英文：部分 SDK/中间层抛出的英文
+    "quota", "limit exceeded", "permission", "rate limit",
 )
 
 
 def _is_tushare_quota_error(ex: Exception) -> bool:
-    """判断异常是否为 Tushare 积分/权限/频率限制错误（而非网络中断或数据问题）。"""
+    """判断异常是否为 Tushare 积分/权限/频率限制错误（而非网络中断或数据问题）。
+
+    命中任一关键词即视作"额度错误"，后续会自动切换到 AKShare fallback；
+    不命中的错误（如 ConnectionError、超时）会直接上抛，由重试/日志处理。
+    """
     msg = str(ex).lower()
     return any(k.lower() in msg for k in _TUSHARE_QUOTA_KEYWORDS)
 
