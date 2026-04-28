@@ -12,3 +12,4 @@ python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 bcrypt<4.0
 slowapi>=0.1.9  # API 限流中间件（0.0.4-dev）
+alembic>=1.13.0  # 数据库 schema 迁移（0.0.4-dev）
