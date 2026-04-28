@@ -387,7 +387,7 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
   const [selectedTrade, setSelectedTrade]   = useState<BacktestTradeRow | null>(null);
   const [tradeDrawerOpen, setTradeDrawerOpen] = useState(false);
 
-  // 资金曲线渲染
+  // 资金曲线渲染（含基准叠加）
   useEffect(() => {
     if (!result || !chartRef.current) return;
     if (!chartInst.current) {
@@ -397,6 +397,39 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
     const dates    = result.equity_curve.map((pt) => pt.date);
     const equities  = result.equity_curve.map((pt) => pt.equity);
     const drawdowns = result.equity_curve.map((pt) => pt.drawdown_pct);
+    const benchEquities = (result.benchmark_curve ?? []).map((pt) => pt.equity);
+    const hasBench = benchEquities.length > 0 && benchEquities.length === equities.length;
+    const benchLabel = result.benchmark_index ? `基准(${result.benchmark_index})` : "基准";
+
+    const legendData = ["总权益"];
+    if (hasBench) legendData.push(benchLabel);
+    legendData.push("回撤%");
+
+    const series: echarts.SeriesOption[] = [
+      {
+        name: "总权益", type: "line", xAxisIndex: 0, yAxisIndex: 0,
+        data: equities, smooth: false,
+        lineStyle: { color: "#1677ff", width: 2 }, itemStyle: { color: "#1677ff" }, symbol: "none",
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: "rgba(22,119,255,0.25)" },
+          { offset: 1, color: "rgba(22,119,255,0.02)" },
+        ]) },
+      },
+    ];
+    if (hasBench) {
+      series.push({
+        name: benchLabel, type: "line", xAxisIndex: 0, yAxisIndex: 0,
+        data: benchEquities, smooth: false,
+        lineStyle: { color: "#faad14", width: 1.5, type: "dashed" },
+        itemStyle: { color: "#faad14" }, symbol: "none",
+      });
+    }
+    series.push({
+      name: "回撤%", type: "line", xAxisIndex: 1, yAxisIndex: 1,
+      data: drawdowns, smooth: false,
+      lineStyle: { color: FALL_COLOR, width: 1.5 }, itemStyle: { color: FALL_COLOR }, symbol: "none",
+      areaStyle: { color: "rgba(255,77,79,0.12)" },
+    });
 
     chart.setOption({
       ...ECHARTS_BASE_OPTION,
@@ -419,7 +452,7 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
           return `${date}<br/>${lines.join("<br/>")}`;
         },
       },
-      legend: { data: ["总权益", "回撤%"], top: 8, textStyle: { color: "#d9d9d9", fontSize: 12 } },
+      legend: { data: legendData, top: 8, textStyle: { color: "#d9d9d9", fontSize: 12 } },
       grid: [
         { left: 70, right: 20, top: 48, bottom: 120 },
         { left: 70, right: 20, top: "68%", bottom: 40 },
@@ -432,23 +465,7 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
         { type: "value", gridIndex: 0, axisLabel: { color: "#8c8c8c", formatter: (v: number) => `¥${(v / 10000).toFixed(0)}万` }, splitLine: { lineStyle: { color: "#222" } } },
         { type: "value", gridIndex: 1, axisLabel: { color: "#8c8c8c", formatter: (v: number) => `${v.toFixed(1)}%` }, splitLine: { lineStyle: { color: "#222" } } },
       ],
-      series: [
-        {
-          name: "总权益", type: "line", xAxisIndex: 0, yAxisIndex: 0,
-          data: equities, smooth: false,
-          lineStyle: { color: "#1677ff", width: 2 }, itemStyle: { color: "#1677ff" }, symbol: "none",
-          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(22,119,255,0.25)" },
-            { offset: 1, color: "rgba(22,119,255,0.02)" },
-          ]) },
-        },
-        {
-          name: "回撤%", type: "line", xAxisIndex: 1, yAxisIndex: 1,
-          data: drawdowns, smooth: false,
-          lineStyle: { color: FALL_COLOR, width: 1.5 }, itemStyle: { color: FALL_COLOR }, symbol: "none",
-          areaStyle: { color: "rgba(255,77,79,0.12)" },
-        },
-      ],
+      series,
     });
 
     const resize = () => chart.resize();
@@ -523,6 +540,80 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
           <Skeleton active paragraph={{ rows: 10 }} />
         ) : result ? (
           <Space direction="vertical" size="large" style={{ width: "100%" }}>
+
+            {/* 口径与成本模型说明行（0.0.4-dev，老记录缺字段时跳过）*/}
+            <Space size={6} wrap>
+              <Tag color="blue">{result.adj_mode === "qfq" ? "前复权口径" : result.adj_mode || "未知口径"}</Tag>
+              {result.execution_price && (
+                <Tag color="cyan">
+                  成交价：{result.execution_price === "next_open" ? "次日开盘" : "收盘价"}
+                </Tag>
+              )}
+              {result.benchmark_index && (
+                <Tag color="gold">基准：{result.benchmark_index}</Tag>
+              )}
+              {typeof result.commission_rate === "number" && (
+                <Tag>佣金 {(result.commission_rate * 10000).toFixed(2)}‱</Tag>
+              )}
+              {typeof result.stamp_duty_rate === "number" && (
+                <Tag>印花税 {(result.stamp_duty_rate * 1000).toFixed(2)}‰</Tag>
+              )}
+              {typeof result.slippage_bps === "number" && <Tag>滑点 {result.slippage_bps}bp</Tag>}
+              {typeof result.lot_size === "number" && <Tag>整手 {result.lot_size} 股</Tag>}
+            </Space>
+
+            {/* 基准对比与成本（老记录无基准则隐藏该行）*/}
+            {(result.benchmark_return_pct != null || result.alpha_pct != null || result.commission_cost_total) ? (
+              <Row gutter={[16, 16]}>
+                <Col xs={12} md={8}>
+                  <Card size="small" styles={{ body: { padding: "12px 16px" } }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>基准收益</Text>
+                    <div style={{ marginTop: 4 }}>
+                      <Text
+                        style={{
+                          fontSize: 20,
+                          fontWeight: 700,
+                          color: pnlColor(result.benchmark_return_pct),
+                        }}
+                      >
+                        {result.benchmark_return_pct == null ? "—" : fmtPct(result.benchmark_return_pct)}
+                      </Text>
+                      {result.benchmark_index && (
+                        <Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
+                          {result.benchmark_index}
+                        </Text>
+                      )}
+                    </div>
+                  </Card>
+                </Col>
+                <Col xs={12} md={8}>
+                  <Card size="small" styles={{ body: { padding: "12px 16px" } }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>α（策略 - 基准）</Text>
+                    <div style={{ marginTop: 4 }}>
+                      <Text
+                        style={{
+                          fontSize: 20,
+                          fontWeight: 700,
+                          color: pnlColor(result.alpha_pct),
+                        }}
+                      >
+                        {result.alpha_pct == null ? "—" : fmtPct(result.alpha_pct)}
+                      </Text>
+                    </div>
+                  </Card>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Card size="small" styles={{ body: { padding: "12px 16px" } }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>交易成本合计</Text>
+                    <div style={{ marginTop: 4 }}>
+                      <Text style={{ fontSize: 20, fontWeight: 700, color: "#8c8c8c" }}>
+                        ¥{fmtMoney(result.commission_cost_total ?? 0)}
+                      </Text>
+                    </div>
+                  </Card>
+                </Col>
+              </Row>
+            ) : null}
 
             {/* 绩效总览三格卡片 */}
             <Row gutter={[16, 16]}>
@@ -1038,6 +1129,19 @@ export default function BacktestHistoryPage() {
           {v > 0 ? "+" : ""}{v.toFixed(2)}%
         </span>
       ),
+    },
+    {
+      title: "α%",
+      dataIndex: "alpha_pct",
+      width: 85,
+      align: "right" as const,
+      sorter: (a, b) => (a.alpha_pct ?? 0) - (b.alpha_pct ?? 0),
+      render: (v: number | null) =>
+        v == null ? "—" : (
+          <span style={{ color: pnlColor(v), fontWeight: 600 }}>
+            {v > 0 ? "+" : ""}{v.toFixed(2)}%
+          </span>
+        ),
     },
     {
       title: "最大回撤",

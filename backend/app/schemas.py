@@ -466,18 +466,30 @@ class UserIndicatorValidateOut(BaseModel):
 class ScreeningRunIn(BaseModel):
     """条件选股的请求体（POST /api/screening/run）。
 
-    user_indicator_id：使用哪个已保存的自定义指标。
-    sub_key：DSL 指标选择哪条子线；旧版 expr 指标不需要（留 None）。
-    compare_op：指标值与阈值的比较运算符（gt/lt/eq/gte/le/ne）。
-    threshold：阈值，如「MA5 大于 0」中的 0。
+    支持两种入参方式（互斥，优先级从上到下）：
+      1. `strategy_id`：使用已保存的 Strategy（kind=screen），后端从表里加载 logic
+      2. `logic`：直接传多条件 logic dict（结构见 StrategyLogic）
+      3. 老的单条件字段：`user_indicator_id + sub_key + compare_op + threshold`
+
     max_scan：最多扫描多少只股票（防止全市场扫描超时）。
     """
     trade_date: date
-    user_indicator_id: int = Field(..., ge=1)
+    # 新：多条件入参（二选一）
+    strategy_id: Optional[int] = Field(None, ge=1, description="引用已保存的 Strategy")
+    logic: Optional[StrategyLogic] = Field(None, description="直接传入多条件 logic")
+    # 老：单条件入参（仅当 strategy_id 和 logic 都为空时使用）
+    user_indicator_id: Optional[int] = Field(None, ge=1)
     sub_key: Optional[str] = Field(None, max_length=64)
     compare_op: str = Field("gt", description="gt|lt|eq|gte|le|ne")
     threshold: float = 0.0
     max_scan: int = Field(6000, ge=100, le=8000)
+
+    @model_validator(mode="after")
+    def at_least_one_input(self):
+        if self.strategy_id is None and self.logic is None and self.user_indicator_id is None:
+            raise ValueError("必须提供 strategy_id、logic 或 user_indicator_id 之一")
+        # strategy_id 和 logic 同时传时优先用 strategy_id（不报错，只提示性地在运行期处理）
+        return self
 
 
 class ScreeningStockRow(BaseModel):
@@ -486,21 +498,29 @@ class ScreeningStockRow(BaseModel):
     name: Optional[str] = None
     close: float
     pct_change: Optional[float] = None   # 当日涨跌幅%
-    indicator_value: float               # 该股在当日的指标数值
+    indicator_value: float               # 主条件当日的指标值（多条件时供排序用）
+    indicator_values: Optional[dict[str, float]] = None  # 多条件：{cond_id: 指标值}
+    adj_mode: str = "qfq"                # 指标计算使用的复权口径（默认前复权，与 K 线副图一致）
 
 
 class ScreeningRunOut(BaseModel):
     """条件选股的结果返回体。"""
     trade_date: str
+    # 老单条件路径回显（is_multi=False 时非空）
     user_indicator_id: Optional[int] = None
     sub_key: Optional[str] = None
     compare_op: Optional[str] = None
     threshold: Optional[float] = None
+    # 新多条件路径回显
+    is_multi: bool = False
+    logic: Optional[StrategyLogic] = None
+    strategy_id: Optional[int] = None
     scanned: int     # 实际扫描了多少只（受 max_scan 限制）
     matched: int     # 命中条件的股票数
     note: Optional[str] = None   # 后端警告（如数据不完整时的提示）
     items: list[ScreeningStockRow]
     history_id: Optional[int] = None   # 本次结果自动保存后的历史记录 ID
+    adj_mode: str = "qfq"                # 本次扫描的复权口径
 
 
 class ScreeningHistoryItem(BaseModel):
@@ -520,6 +540,7 @@ class ScreeningHistoryItem(BaseModel):
     threshold: float                     # 比较阈值
     scanned: int                         # 扫描数量
     matched: int                         # 命中数量
+    is_multi: bool = False               # 多条件路径 → True；老单条件 → False
 
     model_config = {"from_attributes": True}
 
@@ -527,6 +548,7 @@ class ScreeningHistoryItem(BaseModel):
 class ScreeningHistoryDetail(ScreeningHistoryItem):
     """选股历史详情：在摘要基础上补充命中股票列表。"""
     items: list[ScreeningStockRow] = []  # 从 result_json 反序列化而来
+    logic: Optional[StrategyLogic] = None  # 多条件快照；老记录为 None
 
 
 # ---- K 线副图：自定义指标子线序列 ----
@@ -551,18 +573,24 @@ class CustomIndicatorSeriesOut(BaseModel):
 class BacktestRunIn(BaseModel):
     """回测请求体（POST /api/backtest/run）。
 
-    start_date / end_date：回测时间范围（闭区间）。
-    user_indicator_id：使用哪个已保存的自定义指标。
-    sub_key：DSL 指标选择哪条子线；旧版 expr 指标留 None。
-    buy_op / buy_threshold：买入条件（指标值 buy_op buy_threshold 时建仓）。
-    sell_op / sell_threshold：卖出条件（指标值 sell_op sell_threshold 时平仓）。
-    initial_capital：初始资金（元）。
-    max_positions：最多同时持有几只（等额分配资金）。
-    max_scan：每个交易日最多扫描几只股票（防止超时）。
+    支持两种入参方式（互斥，优先级从上到下）：
+      1. `strategy_id`：引用已保存的 Strategy（kind=backtest），后端加载 buy_logic/sell_logic
+      2. `buy_logic` + `sell_logic`：直接传多条件双路 logic
+      3. 老单条件字段：`user_indicator_id + sub_key + buy_op/buy_threshold + sell_op/sell_threshold`
+
+    ── 0.0.4-dev 交易成本与成交模型 ──
+    commission_rate / commission_min / stamp_duty_rate / slippage_bps / lot_size：成本模型参数。
+    execution_price：close=T 日收盘成交；next_open=T+1 开盘成交（更贴实盘）。
+    benchmark_index：基准指数 ts_code。
     """
     start_date: date
     end_date: date
-    user_indicator_id: int = Field(..., ge=1)
+    # 新：多条件入参（三选一）
+    strategy_id: Optional[int] = Field(None, ge=1, description="引用已保存的 Strategy")
+    buy_logic: Optional[StrategyLogic] = None
+    sell_logic: Optional[StrategyLogic] = None
+    # 老：单条件（仅当 strategy_id 和 buy_logic/sell_logic 都为空时使用）
+    user_indicator_id: Optional[int] = Field(None, ge=1)
     sub_key: Optional[str] = Field(None, max_length=64)
     buy_op: str = Field("gt", description="gt|lt|eq|gte|le|ne")
     buy_threshold: float = 0.0
@@ -571,16 +599,36 @@ class BacktestRunIn(BaseModel):
     initial_capital: float = Field(100_000.0, ge=1000)
     max_positions: int = Field(3, ge=1, le=10)
     max_scan: int = Field(3000, ge=100, le=8000)
+    # 交易成本与成交模型（0.0.4-dev 新增；缺省时走业内常识默认值）
+    commission_rate: float = Field(0.00025, ge=0, le=0.01, description="佣金费率，双边")
+    commission_min: float = Field(5.0, ge=0, le=1000, description="每笔佣金最低金额（元）")
+    stamp_duty_rate: float = Field(0.001, ge=0, le=0.01, description="印花税率，仅卖出")
+    slippage_bps: float = Field(10.0, ge=0, le=100, description="滑点基点（1bp=0.01%）")
+    lot_size: int = Field(100, ge=1, le=10000, description="A 股整手，默认 100 股/手")
+    execution_price: Literal["close", "next_open"] = Field("next_open", description="成交价模式")
+    benchmark_index: Optional[str] = Field(
+        "000300.SH", max_length=32, description="基准指数 ts_code；留空表示不叠加基准"
+    )
+
+    @model_validator(mode="after")
+    def at_least_one_input(self):
+        has_multi = self.buy_logic is not None or self.sell_logic is not None
+        if has_multi and (self.buy_logic is None or self.sell_logic is None):
+            raise ValueError("buy_logic 和 sell_logic 必须同时提供")
+        if self.strategy_id is None and not has_multi and self.user_indicator_id is None:
+            raise ValueError("必须提供 strategy_id、buy_logic+sell_logic 或 user_indicator_id 之一")
+        return self
 
 
 class BacktestTradeRow(BaseModel):
     """回测结果中的一笔交易记录。
 
-    buy_date / buy_price：建仓日期和价格。
+    buy_date / buy_price：建仓日期和价格（含滑点的实际成交价）。
     sell_date / sell_price：平仓日期和价格（None 表示回测结束时仍持有）。
-    shares：持有的股数（小数，不考虑 A 股整手限制）。
-    pnl：本笔盈亏金额（元）。
+    shares：持有的股数（按 lot_size 整手取整，末次允许零股卖出）。
+    pnl：本笔盈亏金额（元，已扣佣金+印花税+滑点）。
     pnl_pct：本笔盈亏百分比（%）。
+    cost：本笔交易的佣金+印花税合计（元）。
     """
     ts_code: str
     name: Optional[str] = None
@@ -593,6 +641,7 @@ class BacktestTradeRow(BaseModel):
     pnl_pct: Optional[float] = None
     buy_trigger_val: Optional[float] = None
     sell_trigger_val: Optional[float] = None
+    cost: Optional[float] = None
 
 
 class BacktestEquityPoint(BaseModel):
@@ -627,6 +676,15 @@ class BacktestRunOut(BaseModel):
     max_loss_pct：单笔最大亏损（%，负数）。
     avg_holding_days：平均持仓自然日天数。
     total_win / total_loss：已平仓中盈利/亏损的笔数。
+
+    0.0.4-dev 新增：
+    benchmark_curve：基准指数（归一化到 initial_capital）的逐日曲线。
+    benchmark_index：基准 ts_code（如 000300.SH）。
+    benchmark_return_pct：基准同期收益率（%），None 表示基准数据缺失。
+    alpha_pct：策略超额收益（total_return_pct - benchmark_return_pct），None 同上。
+    commission_cost_total：回测期间累计支付的佣金+印花税（元）。
+    adj_mode：K 线复权口径（固定 "qfq"）。
+    execution_price / commission_rate / slippage_bps / ...：回显本次回测使用的参数。
     """
     start_date: str
     end_date: str
@@ -652,6 +710,24 @@ class BacktestRunOut(BaseModel):
     avg_holding_days: Optional[float] = None
     total_win: int = 0
     total_loss: int = 0
+    # 基准对比与成本回显（0.0.4-dev）
+    benchmark_curve: list[BacktestEquityPoint] = []
+    benchmark_index: Optional[str] = None
+    benchmark_return_pct: Optional[float] = None
+    alpha_pct: Optional[float] = None
+    commission_cost_total: float = 0.0
+    adj_mode: str = "qfq"
+    execution_price: str = "close"
+    commission_rate: float = 0.00025
+    commission_min: float = 5.0
+    stamp_duty_rate: float = 0.001
+    slippage_bps: float = 10.0
+    lot_size: int = 100
+    # 多条件回显（is_multi=True 时 buy_logic/sell_logic 非空）
+    is_multi: bool = False
+    buy_logic: Optional[StrategyLogic] = None
+    sell_logic: Optional[StrategyLogic] = None
+    strategy_id: Optional[int] = None
 
 
 # ---- 回测交易K线详情 ----
@@ -737,6 +813,15 @@ class BacktestRecordItem(BaseModel):
     win_rate: Optional[float]
     annualized_return: Optional[float]
     sharpe_ratio: Optional[float]
+    # 0.0.4-dev 新增的冗余列（老记录返回 None，前端以 "—" 占位）
+    execution_price: Optional[str] = None
+    benchmark_index: Optional[str] = None
+    benchmark_return_pct: Optional[float] = None
+    alpha_pct: Optional[float] = None
+    commission_rate: Optional[float] = None
+    slippage_bps: Optional[float] = None
+    # 多条件路径标记（buy_strategy_snapshot_json 非空 → True）
+    is_multi: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -747,3 +832,211 @@ class BacktestRecordDetail(BacktestRecordItem):
     result 字段从 result_json 反序列化得到，与 BacktestRunOut 结构完全一致。
     """
     result: Optional["BacktestRunOut"] = None  # 完整结果，None 表示 JSON 解析失败
+    # 多条件快照（仅多条件回测时有值，老记录为 None）
+    buy_logic: Optional[StrategyLogic] = None
+    sell_logic: Optional[StrategyLogic] = None
+
+
+# ---- 策略（多条件选股/回测）----
+
+class ConditionSpec(BaseModel):
+    """单个条件：引用某个自定义指标子线 + 比较运算符 + 阈值。
+
+    id 在策略内部唯一（整数），组通过 condition_ids 引用它。
+    compare_op：gt | gte | lt | le | eq | ne。
+    """
+    id: int = Field(..., ge=1)
+    user_indicator_id: int = Field(..., ge=1)
+    sub_key: Optional[str] = Field(None, max_length=64)
+    compare_op: str = Field("gt", description="gt|gte|lt|le|eq|ne")
+    threshold: float = 0.0
+
+
+class GroupSpec(BaseModel):
+    """条件组：组内所有条件默认 AND 关系。"""
+    id: str = Field(..., min_length=1, max_length=32, description="组标识，如 G1")
+    condition_ids: list[int] = Field(..., min_length=1)
+
+
+class CombinerNode(BaseModel):
+    """Combiner 树节点（支持叶子和内部节点二选一）。
+
+    - 叶子：{"ref": "G1"}
+    - 内部：{"op": "AND"|"OR"|"NOT", "args": [...]}
+
+    存嵌套 JSON，由 services/combiner.py 递归求值（无 eval，零注入风险）。
+    """
+    ref: Optional[str] = None
+    op: Optional[Literal["AND", "OR", "NOT"]] = None
+    args: Optional[list["CombinerNode"]] = None
+
+    @model_validator(mode="after")
+    def ref_or_op(self):
+        has_ref = self.ref is not None
+        has_op = self.op is not None
+        if has_ref and has_op:
+            raise ValueError("combiner 节点不能同时含 ref 和 op")
+        if not has_ref and not has_op:
+            raise ValueError("combiner 节点必须含 ref 或 op")
+        if has_op and (self.args is None or len(self.args) == 0):
+            raise ValueError("内部节点 args 不可为空")
+        return self
+
+
+class StrategyLogic(BaseModel):
+    """完整的策略逻辑：条件列表 + 组 + combiner 树 + 主排序条件。
+
+    conditions: 全局 id 唯一的条件列表
+    groups: 由 condition_ids 组合的组，组内恒 AND
+    combiner: 组之间的布尔树
+    primary_condition_id: 主排序条件 id（选股/回测入场优先级都按它的指标值降序）
+    """
+    conditions: list[ConditionSpec] = Field(..., min_length=1)
+    groups: list[GroupSpec] = Field(..., min_length=1)
+    combiner: CombinerNode
+    primary_condition_id: int = Field(..., ge=1)
+
+    @model_validator(mode="after")
+    def cross_check(self):
+        cond_ids = {c.id for c in self.conditions}
+        if len(cond_ids) != len(self.conditions):
+            raise ValueError("conditions 中 id 不可重复")
+        group_ids = {g.id for g in self.groups}
+        if len(group_ids) != len(self.groups):
+            raise ValueError("groups 中 id 不可重复")
+        for g in self.groups:
+            for cid in g.condition_ids:
+                if cid not in cond_ids:
+                    raise ValueError(f"组 {g.id} 引用了未定义的 condition id={cid}")
+        if self.primary_condition_id not in cond_ids:
+            raise ValueError(f"primary_condition_id={self.primary_condition_id} 不在 conditions 中")
+        # combiner 结构性校验（ref 必须指向已存在的组、深度/op 合法）
+        # 放在 services/combiner.py.validate_combiner，入口 API 会再调一次
+        return self
+
+
+class StrategyCreate(BaseModel):
+    """创建策略的请求体（POST /api/strategies）。
+
+    kind='screen' 时必须提供 logic；
+    kind='backtest' 时必须同时提供 buy_logic 和 sell_logic。
+    """
+    code: str = Field(..., min_length=1, max_length=64)
+    display_name: str = Field(..., min_length=1, max_length=128)
+    description: Optional[str] = None
+    kind: Literal["screen", "backtest"]
+    logic: Optional[StrategyLogic] = None
+    buy_logic: Optional[StrategyLogic] = None
+    sell_logic: Optional[StrategyLogic] = None
+
+    @model_validator(mode="after")
+    def logic_matches_kind(self):
+        if self.kind == "screen":
+            if self.logic is None:
+                raise ValueError("kind=screen 时必须提供 logic")
+            if self.buy_logic is not None or self.sell_logic is not None:
+                raise ValueError("kind=screen 时 buy_logic/sell_logic 必须为空")
+        else:  # backtest
+            if self.buy_logic is None or self.sell_logic is None:
+                raise ValueError("kind=backtest 时必须同时提供 buy_logic 和 sell_logic")
+            if self.logic is not None:
+                raise ValueError("kind=backtest 时 logic 必须为空")
+        return self
+
+
+class StrategyPatch(BaseModel):
+    """修改策略的请求体（PATCH /api/strategies/{id}）。
+
+    字段均为可选，只传要改的字段；kind 不可修改（改 kind 等于换策略）。
+    修改 logic 时必须整体替换，不做字段级合并。
+    """
+    display_name: Optional[str] = Field(None, min_length=1, max_length=128)
+    description: Optional[str] = None
+    logic: Optional[StrategyLogic] = None
+    buy_logic: Optional[StrategyLogic] = None
+    sell_logic: Optional[StrategyLogic] = None
+
+
+class StrategyOut(BaseModel):
+    """返回给前端的策略信息。"""
+    id: int
+    code: str
+    display_name: str
+    description: Optional[str] = None
+    kind: Literal["screen", "backtest"]
+    logic: Optional[StrategyLogic] = None
+    buy_logic: Optional[StrategyLogic] = None
+    sell_logic: Optional[StrategyLogic] = None
+    is_system: bool = False                # user_id IS NULL 时为 True（系统预置、只读）
+    created_at: datetime
+    updated_at: datetime
+
+
+class StrategyListItem(BaseModel):
+    """策略列表项（不含完整 logic，节省传输）。"""
+    id: int
+    code: str
+    display_name: str
+    description: Optional[str] = None
+    kind: Literal["screen", "backtest"]
+    is_system: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class StrategyDryRunIn(BaseModel):
+    """策略试算请求体。
+
+    ts_code：用哪只股票试算（需本地已同步日线）。
+    trade_date：指定截面日；None 表示取最近一根可用 K 线。
+    warmup_days：向前加载多少天历史（保证 MA60 等指标有足够预热）。
+    """
+    ts_code: str = Field(..., min_length=6, max_length=32)
+    trade_date: Optional[date] = None
+    warmup_days: int = Field(400, ge=30, le=1000)
+
+
+class StrategyDryRunConditionResult(BaseModel):
+    """单个条件的试算结果。"""
+    cond_id: int
+    user_indicator_id: int
+    code: str
+    display_name: str
+    sub_key: Optional[str] = None     # legacy 指标为 None
+    compare_op: str
+    threshold: float
+    indicator_value: Optional[float] = None
+    satisfied: bool
+
+
+class StrategyDryRunGroupResult(BaseModel):
+    group_id: str
+    condition_ids: list[int]
+    satisfied: bool
+
+
+class StrategyDryRunLogicResult(BaseModel):
+    """单路 logic 的试算结果（screen 只有一路；backtest 分 buy/sell）。"""
+    trade_date: Optional[str] = None
+    hit: bool
+    primary_value: Optional[float] = None
+    conditions: list[StrategyDryRunConditionResult]
+    groups: list[StrategyDryRunGroupResult]
+    note: Optional[str] = None
+
+
+class StrategyDryRunOut(BaseModel):
+    """策略试算响应。
+
+    screen 策略 → main 填充；buy / sell 为 None。
+    backtest 策略 → buy / sell 填充；main 为 None。
+    """
+    strategy_id: int
+    kind: Literal["screen", "backtest"]
+    ts_code: str
+    main: Optional[StrategyDryRunLogicResult] = None
+    buy: Optional[StrategyDryRunLogicResult] = None
+    sell: Optional[StrategyDryRunLogicResult] = None
+
+
+CombinerNode.model_rebuild()

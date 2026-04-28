@@ -16,6 +16,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   DatePicker,
   Divider,
   Drawer,
@@ -23,7 +24,9 @@ import {
   Input,
   InputNumber,
   Modal,
+  Radio,
   Row,
+  Segmented,
   Select,
   Skeleton,
   Space,
@@ -39,6 +42,8 @@ import {
   AppstoreOutlined,
   InfoCircleOutlined,
   LineChartOutlined,
+  MinusCircleOutlined,
+  PlusOutlined,
   RiseOutlined,
   FallOutlined,
   SwapOutlined,
@@ -55,6 +60,8 @@ import {
   runBacktest,
   type BacktestRunOut,
   type BacktestTradeRow,
+  type ConditionSpec,
+  type StrategyLogic,
   type TradeChartOut,
   type UserIndicatorOut,
 } from "../api/client";
@@ -86,6 +93,135 @@ function screeningSubKeys(def: Record<string, unknown> | null | undefined) {
   return subs
     .filter((s) => s.key && s.use_in_screening !== false && !s.auxiliary_only)
     .map((s) => ({ value: s.key!, label: `${s.name || s.key} (${s.key})` }));
+}
+
+/** 多条件表单一行的字段形状 */
+type MultiCondRow = {
+  user_indicator_id: number | undefined;
+  sub_key: string | undefined;
+  compare_op: string;
+  threshold: number;
+};
+
+/** 组装买/卖一侧的 StrategyLogic（扁平 AND/OR，每条件一个组） */
+function buildSideLogic(
+  conditions: MultiCondRow[],
+  combinerLogic: "AND" | "OR",
+  primaryIdx: number,
+): StrategyLogic {
+  const conds: ConditionSpec[] = conditions.map((c, i) => ({
+    id: i + 1,
+    user_indicator_id: c.user_indicator_id as number,
+    sub_key: c.sub_key ?? null,
+    compare_op: c.compare_op,
+    threshold: c.threshold,
+  }));
+  const groups = conds.map((_, i) => ({ id: `G${i + 1}`, condition_ids: [i + 1] }));
+  const combiner =
+    conds.length === 1
+      ? { ref: "G1" }
+      : {
+          op: combinerLogic,
+          args: groups.map((g) => ({ ref: g.id })),
+        };
+  return {
+    conditions: conds,
+    groups,
+    combiner,
+    primary_condition_id: Math.max(0, Math.min(primaryIdx, conds.length - 1)) + 1,
+  };
+}
+
+/**
+ * 多条件模式下的单行条件卡片（复用于买/卖两侧）。
+ *
+ * 一行 = [主排序 Radio（仅买侧）] + [指标下拉] + [子线下拉] + [比较] + [阈值] + [删除]
+ * 子线下拉的选项随当前行选中的指标动态变化。
+ */
+function MultiCondRowCard({
+  field,
+  idx,
+  indicators,
+  multiForm,
+  listName,
+  showPrimary,
+  canRemove,
+  onRemove,
+}: {
+  field: { key: number; name: number };
+  idx: number;
+  indicators: UserIndicatorOut[];
+  multiForm: ReturnType<typeof Form.useForm>[0];
+  listName: "buy_conditions" | "sell_conditions";
+  showPrimary: boolean;
+  canRemove: boolean;
+  onRemove: () => void;
+}) {
+  const indicatorId = Form.useWatch([listName, field.name, "user_indicator_id"], multiForm) as number | undefined;
+  const ind = useMemo(
+    () => indicators.find((x) => x.id === indicatorId) ?? null,
+    [indicators, indicatorId],
+  );
+  const subOpts = useMemo(() => {
+    if (!ind) return [];
+    if (ind.kind === "dsl" && ind.definition) return screeningSubKeys(ind.definition);
+    return [{ value: "__expr__", label: "单行表达式" }];
+  }, [ind]);
+  const isDsl = ind?.kind === "dsl";
+
+  return (
+    <Card size="small" style={{ background: "#fafafa" }}>
+      <Space wrap align="baseline" size="middle">
+        {showPrimary ? <Radio value={idx} style={{ marginRight: 0 }}>主排序</Radio> : null}
+
+        <Form.Item
+          name={[field.name, "user_indicator_id"]}
+          label={`条件 ${idx + 1}`}
+          rules={[{ required: true, message: "请选择指标" }]}
+          style={{ marginBottom: 0 }}
+        >
+          <Select
+            style={{ minWidth: 200 }}
+            placeholder="选择指标"
+            options={indicators.map((r) => ({ value: r.id, label: `${r.display_name} (${r.code})` }))}
+            showSearch
+            optionFilterProp="label"
+          />
+        </Form.Item>
+
+        {isDsl ? (
+          <Form.Item
+            name={[field.name, "sub_key"]}
+            label="子线"
+            rules={[{ required: true, message: "请选择子线" }]}
+            style={{ marginBottom: 0 }}
+          >
+            <Select style={{ minWidth: 160 }} options={subOpts} placeholder="子线" />
+          </Form.Item>
+        ) : null}
+
+        <Form.Item
+          name={[field.name, "compare_op"]}
+          label="比较"
+          style={{ marginBottom: 0 }}
+        >
+          <Select style={{ minWidth: 120 }} options={compareOptions} />
+        </Form.Item>
+
+        <Form.Item
+          name={[field.name, "threshold"]}
+          label="阈值"
+          style={{ marginBottom: 0 }}
+        >
+          <InputNumber step={0.0001} style={{ width: 120 }} />
+        </Form.Item>
+
+        {canRemove ? (
+          <Button type="text" danger icon={<MinusCircleOutlined />} onClick={onRemove} />
+        ) : null}
+      </Space>
+    </Card>
+  );
 }
 
 /** 格式化金额（千分符 + 2位小数） */
@@ -634,6 +770,9 @@ function TradeDetailDrawer({ open, onClose, onAfterClose, trade, params, startDa
 
 export default function BacktestPage() {
   const [form] = Form.useForm();
+  const [multiForm] = Form.useForm();
+  // 模式切换：单条件（沿用旧 form + 模板）/ 多条件（多条件买卖 Form.List）
+  const [mode, setMode] = useState<"single" | "multi">("single");
   const isMobile = useIsMobile();
 
   // 从选股页跳转过来时，location.state 中携带选股条件，自动预填表单
@@ -751,7 +890,7 @@ export default function BacktestPage() {
     }
   }, [selectedInd, subOpts, form]);
 
-  // 渲染资金曲线（权益 + 回撤双轴）
+  // 渲染资金曲线（权益 + 基准 + 回撤三轴）
   useEffect(() => {
     if (!result || !chartRef.current) return;
     if (!chartInstance.current) {
@@ -761,6 +900,55 @@ export default function BacktestPage() {
     const dates   = result.equity_curve.map((pt) => pt.date);
     const equities = result.equity_curve.map((pt) => pt.equity);
     const drawdowns = result.equity_curve.map((pt) => pt.drawdown_pct);
+    const benchEquities = (result.benchmark_curve ?? []).map((pt) => pt.equity);
+    const hasBench = benchEquities.length > 0 && benchEquities.length === equities.length;
+    const benchLabel = result.benchmark_index
+      ? `基准(${result.benchmark_index})`
+      : "基准";
+
+    const legendData = ["总权益"];
+    if (hasBench) legendData.push(benchLabel);
+    legendData.push("回撤%");
+
+    const series: echarts.SeriesOption[] = [
+      {
+        name: "总权益",
+        type: "line",
+        xAxisIndex: 0, yAxisIndex: 0,
+        data: equities,
+        smooth: false,
+        lineStyle: { color: "#1677ff", width: 2 },
+        itemStyle: { color: "#1677ff" },
+        symbol: "none",
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: "rgba(22,119,255,0.25)" },
+          { offset: 1, color: "rgba(22,119,255,0.02)" },
+        ]) },
+      },
+    ];
+    if (hasBench) {
+      series.push({
+        name: benchLabel,
+        type: "line",
+        xAxisIndex: 0, yAxisIndex: 0,
+        data: benchEquities,
+        smooth: false,
+        lineStyle: { color: "#faad14", width: 1.5, type: "dashed" },
+        itemStyle: { color: "#faad14" },
+        symbol: "none",
+      });
+    }
+    series.push({
+      name: "回撤%",
+      type: "line",
+      xAxisIndex: 1, yAxisIndex: 1,
+      data: drawdowns,
+      smooth: false,
+      lineStyle: { color: FALL_COLOR, width: 1.5 },
+      itemStyle: { color: FALL_COLOR },
+      symbol: "none",
+      areaStyle: { color: "rgba(255,77,79,0.12)" },
+    });
 
     chart.setOption({
       ...ECHARTS_BASE_OPTION,
@@ -785,7 +973,7 @@ export default function BacktestPage() {
         },
       },
       legend: {
-        data: ["总权益", "回撤%"],
+        data: legendData,
         top: 8,
         textStyle: { color: "#d9d9d9", fontSize: 12 },
       },
@@ -809,33 +997,7 @@ export default function BacktestPage() {
           splitLine: { lineStyle: { color: "#222" } },
         },
       ],
-      series: [
-        {
-          name: "总权益",
-          type: "line",
-          xAxisIndex: 0, yAxisIndex: 0,
-          data: equities,
-          smooth: false,
-          lineStyle: { color: "#1677ff", width: 2 },
-          itemStyle: { color: "#1677ff" },
-          symbol: "none",
-          areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(22,119,255,0.25)" },
-            { offset: 1, color: "rgba(22,119,255,0.02)" },
-          ]) },
-        },
-        {
-          name: "回撤%",
-          type: "line",
-          xAxisIndex: 1, yAxisIndex: 1,
-          data: drawdowns,
-          smooth: false,
-          lineStyle: { color: FALL_COLOR, width: 1.5 },
-          itemStyle: { color: FALL_COLOR },
-          symbol: "none",
-          areaStyle: { color: "rgba(255,77,79,0.12)" },
-        },
-      ],
+      series,
     });
 
     const resize = () => chart.resize();
@@ -919,6 +1081,75 @@ export default function BacktestPage() {
   ];
 
   const onRun = async () => {
+    // 多条件模式：组装 buy_logic / sell_logic 提交
+    if (mode === "multi") {
+      try {
+        const v = await multiForm.validateFields();
+        const buyRows = (v.buy_conditions as MultiCondRow[]) || [];
+        const sellRows = (v.sell_conditions as MultiCondRow[]) || [];
+        if (buyRows.length === 0 || sellRows.length === 0) {
+          message.warning("买入和卖出都需要至少一个条件");
+          return;
+        }
+        const buyLogic = buildSideLogic(
+          buyRows,
+          (v.buy_logic_combiner as "AND" | "OR") || "AND",
+          Number(v.buy_primary_idx ?? 0),
+        );
+        const sellLogic = buildSideLogic(
+          sellRows,
+          (v.sell_logic_combiner as "AND" | "OR") || "AND",
+          0,
+        );
+        const [start, end] = v.date_range as [Dayjs, Dayjs];
+        const startStr = start.format("YYYY-MM-DD");
+        const endStr = end.format("YYYY-MM-DD");
+        setRunning(true);
+        setResult(null);
+        if (chartInstance.current) chartInstance.current.clear();
+        try {
+          const out = await runBacktest({
+            start_date: startStr,
+            end_date: endStr,
+            buy_logic: buyLogic,
+            sell_logic: sellLogic,
+            initial_capital: v.initial_capital,
+            max_positions: v.max_positions,
+            max_scan: v.max_scan ?? 3000,
+            commission_rate: v.commission_rate ?? 0.00025,
+            commission_min: v.commission_min ?? 5,
+            stamp_duty_rate: v.stamp_duty_rate ?? 0.001,
+            slippage_bps: v.slippage_bps ?? 10,
+            lot_size: v.lot_size ?? 100,
+            execution_price: v.execution_price ?? "next_open",
+            benchmark_index: v.benchmark_index ?? "000300.SH",
+          });
+          setResult(out);
+          // 多条件时 lastParams 保留主条件信息供 Drawer 验证图使用
+          const primaryBuyCond = buyLogic.conditions.find((c) => c.id === buyLogic.primary_condition_id);
+          setLastParams({
+            buy_op: primaryBuyCond?.compare_op ?? "gt",
+            buy_threshold: primaryBuyCond?.threshold ?? 0,
+            sell_op: sellLogic.conditions[0]?.compare_op ?? "lt",
+            sell_threshold: sellLogic.conditions[0]?.threshold ?? 0,
+            user_indicator_id: primaryBuyCond?.user_indicator_id ?? 0,
+            sub_key: primaryBuyCond?.sub_key ?? "",
+            start_date: startStr, end_date: endStr,
+          });
+          const sign = out.total_return_pct > 0 ? "+" : "";
+          message.success(`回测完成：${out.total_trades} 笔交易，总收益 ${sign}${out.total_return_pct.toFixed(2)}%`);
+        } catch (e) {
+          message.error(getApiErrorMessage(e));
+        } finally {
+          setRunning(false);
+        }
+      } catch {
+        // 表单校验失败
+      }
+      return;
+    }
+
+    // 单条件模式：沿用原有流程
     try {
       const v = await form.validateFields();
       const [start, end] = v.date_range as [Dayjs, Dayjs];
@@ -940,6 +1171,13 @@ export default function BacktestPage() {
           initial_capital: v.initial_capital,
           max_positions: v.max_positions,
           max_scan: v.max_scan ?? 3000,
+          commission_rate: v.commission_rate ?? 0.00025,
+          commission_min: v.commission_min ?? 5,
+          stamp_duty_rate: v.stamp_duty_rate ?? 0.001,
+          slippage_bps: v.slippage_bps ?? 10,
+          lot_size: v.lot_size ?? 100,
+          execution_price: v.execution_price ?? "next_open",
+          benchmark_index: v.benchmark_index ?? "000300.SH",
         });
         setResult(out);
         setLastParams({
@@ -1023,6 +1261,14 @@ export default function BacktestPage() {
               initial_capital: 100000,
               max_positions: 3,
               max_scan: 3000,
+              // 交易成本与成交模型默认值（0.0.4-dev）
+              commission_rate: 0.00025,
+              commission_min: 5,
+              stamp_duty_rate: 0.001,
+              slippage_bps: 10,
+              lot_size: 100,
+              execution_price: "next_open",
+              benchmark_index: "000300.SH",
             }}
           >
             {activeTemplate ? (
@@ -1198,12 +1444,144 @@ export default function BacktestPage() {
                 </Row>
               </>
             )}
+
+            {/* ── 交易成本与成交模型（0.0.4-dev）── */}
+            <Collapse
+              ghost
+              size="small"
+              style={{ marginTop: -8, marginBottom: 4 }}
+              items={[
+                {
+                  key: "cost",
+                  label: (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      交易成本与成交模型（可选，默认万 2.5 佣金 · 千 1 印花税 · 10bp 滑点 · 100 股整手 · 次日开盘 · 沪深 300 基准）
+                    </Text>
+                  ),
+                  children: (
+                    <Row gutter={[16, 0]}>
+                      <Col xs={12} md={3}>
+                        <Form.Item
+                          name="commission_rate"
+                          label="佣金率"
+                          tooltip="双边按成交金额收取，默认万 2.5"
+                        >
+                          <InputNumber
+                            min={0} max={0.01} step={0.00005}
+                            formatter={(v) => v != null ? `${(Number(v) * 10000).toFixed(2)}‱` : ""}
+                            parser={(s) => {
+                              if (!s) return 0 as never;
+                              const n = Number(String(s).replace(/[^\d.]/g, ""));
+                              return (isNaN(n) ? 0 : n / 10000) as never;
+                            }}
+                            style={{ width: "100%" }}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={3}>
+                        <Form.Item name="commission_min" label="佣金最低（元）">
+                          <InputNumber min={0} max={1000} step={1} style={{ width: "100%" }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={3}>
+                        <Form.Item
+                          name="stamp_duty_rate"
+                          label="印花税率"
+                          tooltip="仅卖出收取，默认千 1"
+                        >
+                          <InputNumber
+                            min={0} max={0.01} step={0.0001}
+                            formatter={(v) => v != null ? `${(Number(v) * 1000).toFixed(2)}‰` : ""}
+                            parser={(s) => {
+                              if (!s) return 0 as never;
+                              const n = Number(String(s).replace(/[^\d.]/g, ""));
+                              return (isNaN(n) ? 0 : n / 1000) as never;
+                            }}
+                            style={{ width: "100%" }}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={3}>
+                        <Form.Item
+                          name="slippage_bps"
+                          label="滑点（bp）"
+                          tooltip="买入上浮、卖出下压相同幅度；1bp=0.01%"
+                        >
+                          <InputNumber min={0} max={100} step={1} style={{ width: "100%" }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={3}>
+                        <Form.Item
+                          name="lot_size"
+                          label="整手（股）"
+                          tooltip="A 股 100 股/手；shares 向下取整到整手"
+                        >
+                          <InputNumber min={1} max={10000} step={100} style={{ width: "100%" }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={4}>
+                        <Form.Item
+                          name="execution_price"
+                          label="成交价"
+                          tooltip="next_open：T 日信号 T+1 开盘成交（更贴实盘）；close：T 日收盘成交"
+                        >
+                          <Radio.Group
+                            buttonStyle="solid"
+                            size="small"
+                            optionType="button"
+                            options={[
+                              { label: "次日开盘", value: "next_open" },
+                              { label: "收盘价", value: "close" },
+                            ]}
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={5}>
+                        <Form.Item
+                          name="benchmark_index"
+                          label="基准指数"
+                          tooltip="回测结束后叠加净值 vs 基准曲线，并计算 α"
+                        >
+                          <Select
+                            allowClear
+                            placeholder="不叠加基准"
+                            options={[
+                              { value: "000300.SH", label: "沪深 300 (000300.SH)" },
+                              { value: "000905.SH", label: "中证 500 (000905.SH)" },
+                              { value: "000001.SH", label: "上证指数 (000001.SH)" },
+                            ]}
+                            style={{ width: "100%" }}
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  ),
+                },
+              ]}
+            />
           </Form>
         )}
       </Card>
 
       {/* 结果区 */}
       {result && (        <Space direction="vertical" size="large" style={{ width: "100%" }}>
+
+          {/* 口径与成本模型说明行（0.0.4-dev）*/}
+          <Space size={6} wrap>
+            <Tag color="blue">前复权口径</Tag>
+            <Tag color="cyan">
+              成交价：{result.execution_price === "next_open" ? "次日开盘" : "收盘价"}
+            </Tag>
+            {result.benchmark_index && (
+              <Tag color="gold">基准：{result.benchmark_index}</Tag>
+            )}
+            <Tag>
+              佣金 {(result.commission_rate * 10000).toFixed(2)}‱（最低 ¥{result.commission_min}）
+            </Tag>
+            <Tag>印花税 {(result.stamp_duty_rate * 1000).toFixed(2)}‰</Tag>
+            <Tag>滑点 {result.slippage_bps}bp</Tag>
+            <Tag>整手 {result.lot_size} 股</Tag>
+          </Space>
 
           {/* 快捷入口：将买入条件同步到选股页，在当前截面快速看哪些股票满足条件 */}
           <div style={{ textAlign: "right" }}>
@@ -1227,6 +1605,70 @@ export default function BacktestPage() {
               将买入条件转为选股
             </Button>
           </div>
+
+          {/* 基准对比与交易成本（0.0.4-dev）*/}
+          <Row gutter={[16, 16]}>
+            <Col xs={12} md={8}>
+              <Card size="small" styles={{ body: { padding: "12px 16px" } }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>基准收益</Text>
+                <div style={{ marginTop: 4 }}>
+                  <Text
+                    style={{
+                      fontSize: 20,
+                      fontWeight: 700,
+                      color: pnlColor(result.benchmark_return_pct),
+                    }}
+                  >
+                    {result.benchmark_return_pct == null ? "—" : fmtPct(result.benchmark_return_pct)}
+                  </Text>
+                  {result.benchmark_index && (
+                    <Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
+                      {result.benchmark_index}
+                    </Text>
+                  )}
+                </div>
+              </Card>
+            </Col>
+            <Col xs={12} md={8}>
+              <Card size="small" styles={{ body: { padding: "12px 16px" } }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  α（策略 - 基准）
+                  <Tooltip title="α = 策略总收益 - 基准同期收益">
+                    <InfoCircleOutlined style={{ fontSize: 11, color: "#8c8c8c", marginLeft: 4 }} />
+                  </Tooltip>
+                </Text>
+                <div style={{ marginTop: 4 }}>
+                  <Text
+                    style={{
+                      fontSize: 20,
+                      fontWeight: 700,
+                      color: pnlColor(result.alpha_pct),
+                    }}
+                  >
+                    {result.alpha_pct == null ? "—" : fmtPct(result.alpha_pct)}
+                  </Text>
+                </div>
+              </Card>
+            </Col>
+            <Col xs={24} md={8}>
+              <Card size="small" styles={{ body: { padding: "12px 16px" } }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  交易成本合计
+                  <Tooltip title="回测期间累计支付的佣金 + 印花税（不含滑点，滑点已反映在成交价）">
+                    <InfoCircleOutlined style={{ fontSize: 11, color: "#8c8c8c", marginLeft: 4 }} />
+                  </Tooltip>
+                </Text>
+                <div style={{ marginTop: 4 }}>
+                  <Text style={{ fontSize: 20, fontWeight: 700, color: "#8c8c8c" }}>
+                    ¥{fmtMoney(result.commission_cost_total)}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
+                    占初始资金 {((result.commission_cost_total / result.initial_capital) * 100).toFixed(2)}%
+                  </Text>
+                </div>
+              </Card>
+            </Col>
+          </Row>
 
           {/* 绩效总览卡片组 */}
           <Row gutter={[16, 16]}>

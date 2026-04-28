@@ -194,35 +194,74 @@ export type ScreeningStockRow = {
   name: string | null;
   close: number;              // 收盘价
   pct_change: number | null;  // 涨跌幅
-  indicator_value: number;    // 该股该日的指标值
+  indicator_value: number;    // 主条件当日指标值（用于排序）
+  indicator_values?: Record<string, number> | null;  // 多条件：{cond_id: 值}
+  adj_mode?: string;          // 指标计算复权口径（默认 "qfq"）
+};
+
+// ── 多条件策略（Strategy）相关类型 ──────────────────────────────
+
+export type ConditionSpec = {
+  id: number;
+  user_indicator_id: number;
+  sub_key: string | null;
+  compare_op: string;
+  threshold: number;
+};
+
+export type GroupSpec = {
+  id: string;                 // 组标识，如 "G1"
+  condition_ids: number[];
+};
+
+export type CombinerNode = {
+  ref?: string;               // 叶子：{ref: "G1"}
+  op?: "AND" | "OR" | "NOT";  // 内部：{op, args}
+  args?: CombinerNode[];
+};
+
+export type StrategyLogic = {
+  conditions: ConditionSpec[];
+  groups: GroupSpec[];
+  combiner: CombinerNode;
+  primary_condition_id: number;
 };
 
 /** 一次选股运行的完整返回结果 */
 export type ScreeningRunOut = {
   trade_date: string;           // 实际使用的交易日
+  // 老单条件路径回显（is_multi=false 时非空）
   user_indicator_id: number | null;
-  sub_key: string | null;       // 参与选股的子线
-  compare_op: string | null;    // 比较运算符（gt/gte/lt/le/eq/ne）
-  threshold: number | null;     // 比较阈值
+  sub_key: string | null;
+  compare_op: string | null;
+  threshold: number | null;
+  // 新多条件路径回显（is_multi=true 时非空）
+  is_multi?: boolean;
+  logic?: StrategyLogic | null;
+  strategy_id?: number | null;
   scanned: number;              // 实际扫描的股票数
   matched: number;              // 满足条件的股票数
   note: string | null;          // 后端警告信息（如数据不完整）
   items: ScreeningStockRow[];   // 命中的股票列表
   history_id: number | null;    // 本次选股自动保存的历史记录 ID（保存失败时为 null）
+  adj_mode?: string;            // 本次扫描使用的复权口径（默认 "qfq"）
 };
 
 /**
  * 执行一次条件选股扫描
- * @param body.trade_date        - 扫描的交易日
- * @param body.user_indicator_id - 用哪个自定义指标
- * @param body.sub_key           - 用哪条子线（旧版指标不传）
- * @param body.compare_op        - 比较运算符（默认 gt）
- * @param body.threshold         - 阈值
- * @param body.max_scan          - 最多扫描数（防超时，默认 6000）
+ *
+ * 三种入参方式（优先级：strategy_id > logic > 老字段）：
+ *   1. strategy_id：引用已保存的 Strategy
+ *   2. logic：直接传多条件 logic
+ *   3. user_indicator_id + sub_key + compare_op + threshold：老单条件
  */
 export async function runScreening(body: {
   trade_date: string;
-  user_indicator_id: number;
+  // 新
+  strategy_id?: number;
+  logic?: StrategyLogic;
+  // 老
+  user_indicator_id?: number;
   sub_key?: string;
   compare_op?: string;
   threshold?: number;
@@ -242,16 +281,18 @@ export type ScreeningHistoryItem = {
   indicator_name: string;         // 指标显示名（冗余存储，删除指标后仍可展示）
   indicator_code: string;         // 指标英文标识
   user_indicator_id: number | null;
-  sub_key: string | null;         // 参与选股的子线 key
+  sub_key: string | null;         // 参与选股的子线 key（多条件记录取主条件的）
   compare_op: string | null;      // 比较运算符（gt/gte/lt/le/eq/ne）
   threshold: number;              // 阈值
   scanned: number;                // 扫描总数
   matched: number;                // 命中数
+  is_multi?: boolean;             // 是否多条件记录
 };
 
 /** 选股历史详情（包含命中的股票列表，从 result_json 反序列化） */
 export type ScreeningHistoryDetail = ScreeningHistoryItem & {
   items: ScreeningStockRow[];     // 命中的股票列表
+  logic?: StrategyLogic | null;   // 多条件快照（老记录为 null）
 };
 
 /**
@@ -872,15 +913,28 @@ export async function fetchDailyUniverse(
 export type BacktestRunIn = {
   start_date: string;
   end_date: string;
-  user_indicator_id: number;
+  // 新：多条件入参（三选一，优先级 strategy_id > buy_logic+sell_logic > 老字段）
+  strategy_id?: number;
+  buy_logic?: StrategyLogic;
+  sell_logic?: StrategyLogic;
+  // 老：单条件
+  user_indicator_id?: number;
   sub_key?: string | null;
-  buy_op: string;
-  buy_threshold: number;
-  sell_op: string;
-  sell_threshold: number;
+  buy_op?: string;
+  buy_threshold?: number;
+  sell_op?: string;
+  sell_threshold?: number;
   initial_capital: number;
   max_positions: number;
   max_scan?: number;
+  // 0.0.4-dev：交易成本与成交模型（可选，缺省走后端默认）
+  commission_rate?: number;    // 佣金费率，双边（默认 0.00025 = 万 2.5）
+  commission_min?: number;     // 每笔佣金最低（元，默认 5）
+  stamp_duty_rate?: number;    // 印花税率，仅卖出（默认 0.001 = 千 1）
+  slippage_bps?: number;       // 滑点基点（默认 10）
+  lot_size?: number;           // 整手大小（默认 100）
+  execution_price?: "close" | "next_open"; // 成交价模式（默认 next_open）
+  benchmark_index?: string | null;         // 基准 ts_code（默认 000300.SH）
 };
 
 /** 资金曲线中的一个数据点 */
@@ -903,6 +957,7 @@ export type BacktestTradeRow = {
   pnl_pct: number | null;
   buy_trigger_val: number | null;
   sell_trigger_val: number | null;
+  cost: number | null;  // 本笔交易佣金+印花税合计（元）
 };
 
 /** 回测完整结果 */
@@ -931,6 +986,24 @@ export type BacktestRunOut = {
   avg_holding_days: number | null;
   total_win: number;
   total_loss: number;
+  // 基准对比与成本回显（0.0.4-dev）
+  benchmark_curve: BacktestEquityPoint[];
+  benchmark_index: string | null;
+  benchmark_return_pct: number | null;
+  alpha_pct: number | null;
+  commission_cost_total: number;
+  adj_mode: string;
+  execution_price: string;
+  commission_rate: number;
+  commission_min: number;
+  stamp_duty_rate: number;
+  slippage_bps: number;
+  lot_size: number;
+  // 多条件回显
+  is_multi?: boolean;
+  buy_logic?: StrategyLogic | null;
+  sell_logic?: StrategyLogic | null;
+  strategy_id?: number | null;
 };
 
 /**
@@ -1001,11 +1074,21 @@ export type BacktestRecordItem = {
   win_rate: number | null;        // 胜率（%）
   annualized_return: number | null;  // 年化收益率（%）
   sharpe_ratio: number | null;    // 夏普比率
+  // 0.0.4-dev 新增冗余字段（老记录返回 null）
+  execution_price: string | null;
+  benchmark_index: string | null;
+  benchmark_return_pct: number | null;
+  alpha_pct: number | null;
+  commission_rate: number | null;
+  slippage_bps: number | null;
+  is_multi?: boolean;  // 是否多条件记录
 };
 
 /** 回测历史详情（包含完整结果：资金曲线 + 交易记录，从 result_json 反序列化） */
 export type BacktestRecordDetail = BacktestRecordItem & {
   result: BacktestRunOut | null;  // 完整回测结果（含资金曲线和交易明细）
+  buy_logic?: StrategyLogic | null;
+  sell_logic?: StrategyLogic | null;
 };
 
 /**

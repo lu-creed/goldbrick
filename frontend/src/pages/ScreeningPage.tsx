@@ -17,6 +17,8 @@ import {
   Form,
   InputNumber,
   Popconfirm,
+  Radio,
+  Segmented,
   Select,
   Skeleton,
   Space,
@@ -28,7 +30,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
-import { SwapOutlined } from "@ant-design/icons";
+import { MinusCircleOutlined, PlusOutlined, SwapOutlined } from "@ant-design/icons";
 import { StarFilled, StarOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -42,6 +44,8 @@ import {
   fetchWatchlist,
   addToWatchlist,
   removeFromWatchlist,
+  type ConditionSpec,
+  type StrategyLogic,
   type WatchlistItem,
   type ScreeningHistoryDetail,
   type ScreeningHistoryItem,
@@ -78,6 +82,44 @@ const compareOptions = [
 
 /** 比较运算符到符号的映射（用于显示） */
 const OP_LABEL: Record<string, string> = { gt: ">", gte: "≥", lt: "<", le: "≤", eq: "=", ne: "≠" };
+
+/** 多条件表单里一行条件的字段形状（提交前组装进 StrategyLogic） */
+type MultiCondRow = {
+  user_indicator_id: number | undefined;
+  sub_key: string | undefined;
+  compare_op: string;
+  threshold: number;
+};
+
+/** 把多条件表单值组装成后端要的 StrategyLogic 结构（扁平 AND/OR，每个条件一个组）。 */
+function buildLogicFromMultiForm(
+  conditions: MultiCondRow[],
+  combinerLogic: "AND" | "OR",
+  primaryIdx: number,
+): StrategyLogic {
+  const conds: ConditionSpec[] = conditions.map((c, i) => ({
+    id: i + 1,
+    user_indicator_id: c.user_indicator_id as number,
+    sub_key: c.sub_key ?? null,
+    compare_op: c.compare_op,
+    threshold: c.threshold,
+  }));
+  const groups = conds.map((_, i) => ({ id: `G${i + 1}`, condition_ids: [i + 1] }));
+  // 单条件时直接指向它；多条件时用 AND/OR 包起来
+  const combiner =
+    conds.length === 1
+      ? { ref: "G1" }
+      : {
+          op: combinerLogic,
+          args: groups.map((g) => ({ ref: g.id })),
+        };
+  return {
+    conditions: conds,
+    groups,
+    combiner,
+    primary_condition_id: primaryIdx + 1,
+  };
+}
 
 // ── 命中股票表格（选股结果页和历史详情页共用） ─────────────────────────────────
 
@@ -169,9 +211,158 @@ function StockTable({ items, watchlistProps }: { items: ScreeningStockRow[]; wat
 
 // ── 主页面组件 ─────────────────────────────────────────────────────────────────
 
+/**
+ * 历史详情里渲染多条件快照：每行一个条件 + 组合方式标签。
+ */
+function LogicDetailView({
+  logic,
+  indicators,
+}: {
+  logic: StrategyLogic;
+  indicators: UserIndicatorOut[];
+}) {
+  const combiner = logic.combiner;
+  // 推导当前 combiner 的可读描述（扁平 AND/OR 或带括号）
+  const combinerText = useMemo(() => {
+    function walk(n: typeof combiner): string {
+      if (n.ref) return n.ref;
+      const op = n.op!;
+      const parts = (n.args || []).map(walk);
+      if (op === "NOT") return `NOT ${parts[0]}`;
+      return parts.join(` ${op} `);
+    }
+    return walk(combiner);
+  }, [combiner]);
+
+  const indMap = useMemo(() => {
+    const m = new Map<number, UserIndicatorOut>();
+    indicators.forEach((x) => m.set(x.id, x));
+    return m;
+  }, [indicators]);
+
+  return (
+    <Card size="small" title="条件配置" style={{ background: "#fafafa" }}>
+      <Space direction="vertical" size={6} style={{ width: "100%" }}>
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>组合：</Typography.Text>
+          <Tag color="blue">{combinerText}</Tag>
+        </div>
+        {logic.conditions.map((c) => {
+          const ind = indMap.get(c.user_indicator_id);
+          const isPrimary = c.id === logic.primary_condition_id;
+          return (
+            <Space key={c.id} size={6} wrap>
+              <Tag color={isPrimary ? "gold" : undefined}>G{logic.groups.findIndex((g) => g.condition_ids.includes(c.id)) + 1}</Tag>
+              <Typography.Text>
+                {ind ? ind.display_name : `指标 ${c.user_indicator_id}`}
+                {c.sub_key ? <span style={{ color: "#999", marginLeft: 6 }}>[{c.sub_key}]</span> : null}
+              </Typography.Text>
+              <Tag>{OP_LABEL[c.compare_op] ?? c.compare_op}</Tag>
+              <Typography.Text code>{c.threshold}</Typography.Text>
+              {isPrimary ? <Tag color="gold">主排序</Tag> : null}
+            </Space>
+          );
+        })}
+      </Space>
+    </Card>
+  );
+}
+
+/**
+ * 多条件模式下的单行条件卡片。
+ *
+ * 一行 = [主排序 Radio] + [指标下拉] + [子线下拉] + [比较] + [阈值] + [删除]
+ * 子线下拉的选项随当前行选中的指标动态变化（通过 Form.useWatch 读取同一行的 user_indicator_id）。
+ */
+function MultiCondRowCard({
+  field,
+  idx,
+  indicators,
+  multiForm,
+  canRemove,
+  onRemove,
+}: {
+  field: { key: number; name: number };
+  idx: number;
+  indicators: UserIndicatorOut[];
+  multiForm: ReturnType<typeof Form.useForm>[0];
+  canRemove: boolean;
+  onRemove: () => void;
+}) {
+  // 监听该行选的指标，动态推导子线选项
+  const indicatorId = Form.useWatch(["conditions", field.name, "user_indicator_id"], multiForm) as number | undefined;
+  const ind = useMemo(
+    () => indicators.find((x) => x.id === indicatorId) ?? null,
+    [indicators, indicatorId],
+  );
+  const subOpts = useMemo(() => {
+    if (!ind) return [];
+    if (ind.kind === "dsl" && ind.definition) return screeningSubKeys(ind.definition);
+    return [{ value: "__expr__", label: "单行表达式" }];
+  }, [ind]);
+  const isDsl = ind?.kind === "dsl";
+
+  return (
+    <Card size="small" style={{ background: "#fafafa" }}>
+      <Space wrap align="baseline" size="middle">
+        <Radio value={idx} style={{ marginRight: 0 }}>主排序</Radio>
+
+        <Form.Item
+          name={[field.name, "user_indicator_id"]}
+          label={`条件 ${idx + 1}`}
+          rules={[{ required: true, message: "请选择指标" }]}
+          style={{ marginBottom: 0 }}
+        >
+          <Select
+            style={{ minWidth: 200 }}
+            placeholder="选择指标"
+            options={indicators.map((r) => ({ value: r.id, label: `${r.display_name} (${r.code})` }))}
+            showSearch
+            optionFilterProp="label"
+          />
+        </Form.Item>
+
+        {isDsl ? (
+          <Form.Item
+            name={[field.name, "sub_key"]}
+            label="子线"
+            rules={[{ required: true, message: "请选择子线" }]}
+            style={{ marginBottom: 0 }}
+          >
+            <Select style={{ minWidth: 160 }} options={subOpts} placeholder="子线" />
+          </Form.Item>
+        ) : null}
+
+        <Form.Item
+          name={[field.name, "compare_op"]}
+          label="比较"
+          style={{ marginBottom: 0 }}
+        >
+          <Select style={{ minWidth: 120 }} options={compareOptions} />
+        </Form.Item>
+
+        <Form.Item
+          name={[field.name, "threshold"]}
+          label="阈值"
+          style={{ marginBottom: 0 }}
+        >
+          <InputNumber step={0.0001} style={{ width: 120 }} />
+        </Form.Item>
+
+        {canRemove ? (
+          <Button type="text" danger icon={<MinusCircleOutlined />} onClick={onRemove} />
+        ) : null}
+      </Space>
+    </Card>
+  );
+}
+
 export default function ScreeningPage() {
   // ── 表单 & 选股执行状态 ──────────────────────────────────
   const [form] = Form.useForm();
+  const [multiForm] = Form.useForm();
+  // 模式切换：单条件（沿用旧 form）/ 多条件（新的多条件 form）
+  const [mode, setMode] = useState<"single" | "multi">("single");
 
   // 从回测页跳转过来时，location.state 中携带回测条件，自动预填选股表单
   const location = useLocation();
@@ -196,6 +387,7 @@ export default function ScreeningPage() {
     note: string | null;
     sub_key: string | null;
     items: ScreeningStockRow[];
+    adj_mode?: string;
   } | null>(null);
 
   // ── 历史记录 tab 状态 ────────────────────────────────────
@@ -373,6 +565,51 @@ export default function ScreeningPage() {
   // ── 执行选股 ─────────────────────────────────────────────
 
   const onRun = async () => {
+    // 多条件模式：组装 logic 提交
+    if (mode === "multi") {
+      try {
+        const v = await multiForm.validateFields();
+        const rows = (v.conditions as MultiCondRow[]) || [];
+        if (rows.length === 0) {
+          message.warning("请至少添加一个条件");
+          return;
+        }
+        const logic = buildLogicFromMultiForm(
+          rows,
+          (v.combiner_logic as "AND" | "OR") || "AND",
+          Number(v.primary_cond_idx ?? 0),
+        );
+        const td = (v.trade_date as Dayjs).format("YYYY-MM-DD");
+        setRunning(true);
+        setResult(null);
+        try {
+          const out = await runScreening({
+            trade_date: td,
+            logic,
+            max_scan: (v.max_scan as number) ?? 6000,
+          });
+          setResult({
+            trade_date: out.trade_date,
+            scanned: out.scanned,
+            matched: out.matched,
+            note: out.note,
+            sub_key: out.sub_key,
+            items: out.items,
+            adj_mode: out.adj_mode,
+          });
+          message.success(`完成：扫描 ${out.scanned}，命中 ${out.matched}`);
+        } catch (e) {
+          message.error(getApiErrorMessage(e));
+        } finally {
+          setRunning(false);
+        }
+      } catch {
+        // 表单校验失败，Ant Design 会自动高亮出错字段
+      }
+      return;
+    }
+
+    // 单条件模式：维持原有行为
     try {
       const v = await form.validateFields();
       const td = (v.trade_date as Dayjs).format("YYYY-MM-DD");
@@ -395,6 +632,7 @@ export default function ScreeningPage() {
           note: out.note,
           sub_key: out.sub_key,
           items: out.items,
+          adj_mode: out.adj_mode,
         });
         message.success(`完成：扫描 ${out.scanned}，命中 ${out.matched}`);
       } catch (e) {
@@ -435,11 +673,15 @@ export default function ScreeningPage() {
     {
       title: "筛选条件",
       key: "condition",
-      width: 120,
-      render: (_: unknown, r: ScreeningHistoryItem) =>
-        r.compare_op
+      width: 140,
+      render: (_: unknown, r: ScreeningHistoryItem) => {
+        if (r.is_multi) {
+          return <Tag color="purple">多条件</Tag>;
+        }
+        return r.compare_op
           ? `${OP_LABEL[r.compare_op] ?? r.compare_op} ${r.threshold}`
-          : "—",
+          : "—";
+      },
     },
     {
       title: "命中 / 扫描",
@@ -501,64 +743,138 @@ export default function ScreeningPage() {
                   {loadingInd ? (
                     <Skeleton active paragraph={{ rows: 2 }} />
                   ) : (
-                    <Form
-                      form={form}
-                      layout="inline"
-                      initialValues={{
-                        trade_date: dayjs(),
-                        compare_op: "gt",
-                        threshold: 0,
-                        max_scan: 6000,
-                      }}
-                      style={{ rowGap: 16 }}
-                    >
-                      {/* 交易日：选择要扫描哪一天的截面数据 */}
-                      <Form.Item name="trade_date" label="交易日" rules={[{ required: true }]}>
-                        <DatePicker />
-                      </Form.Item>
+                    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                      {/* 单条件 / 多条件 切换 */}
+                      <Segmented
+                        value={mode}
+                        onChange={(v) => setMode(v as "single" | "multi")}
+                        options={[
+                          { label: "单条件", value: "single" },
+                          { label: "多条件 (AND / OR)", value: "multi" },
+                        ]}
+                      />
 
-                      {/* 自定义指标：选择用哪个指标的值来筛选 */}
-                      <Form.Item name="user_indicator_id" label="自定义指标" rules={[{ required: true, message: "请选择" }]}>
-                        <Select
-                          style={{ minWidth: 220 }}
-                          placeholder="选择已保存指标"
-                          options={indicators.map((r) => ({
-                            value: r.id,
-                            label: `${r.display_name} (${r.code})`,
-                          }))}
-                          showSearch
-                          optionFilterProp="label"
-                        />
-                      </Form.Item>
+                      {mode === "single" ? (
+                        <Form
+                          form={form}
+                          layout="inline"
+                          initialValues={{
+                            trade_date: dayjs(),
+                            compare_op: "gt",
+                            threshold: 0,
+                            max_scan: 6000,
+                          }}
+                          style={{ rowGap: 16 }}
+                        >
+                          <Form.Item name="trade_date" label="交易日" rules={[{ required: true }]}>
+                            <DatePicker />
+                          </Form.Item>
 
-                      {/* 子线：DSL 指标可能有多条输出线，选择用哪条 */}
-                      {selectedInd?.kind === "dsl" ? (
-                        <Form.Item name="sub_key" label="子线" rules={[{ required: true }]}>
-                          <Select style={{ minWidth: 200 }} options={subOpts} placeholder="参与选股的子线" />
-                        </Form.Item>
-                      ) : null}
+                          <Form.Item name="user_indicator_id" label="自定义指标" rules={[{ required: true, message: "请选择" }]}>
+                            <Select
+                              style={{ minWidth: 220 }}
+                              placeholder="选择已保存指标"
+                              options={indicators.map((r) => ({
+                                value: r.id,
+                                label: `${r.display_name} (${r.code})`,
+                              }))}
+                              showSearch
+                              optionFilterProp="label"
+                            />
+                          </Form.Item>
 
-                      {/* 比较方式 */}
-                      <Form.Item name="compare_op" label="比较">
-                        <Select style={{ minWidth: 140 }} options={compareOptions} />
-                      </Form.Item>
+                          {selectedInd?.kind === "dsl" ? (
+                            <Form.Item name="sub_key" label="子线" rules={[{ required: true }]}>
+                              <Select style={{ minWidth: 200 }} options={subOpts} placeholder="参与选股的子线" />
+                            </Form.Item>
+                          ) : null}
 
-                      {/* 阈值 */}
-                      <Form.Item name="threshold" label="阈值">
-                        <InputNumber step={0.0001} style={{ width: 120 }} />
-                      </Form.Item>
+                          <Form.Item name="compare_op" label="比较">
+                            <Select style={{ minWidth: 140 }} options={compareOptions} />
+                          </Form.Item>
 
-                      {/* 最多扫描：防止全市场扫描超时 */}
-                      <Form.Item name="max_scan" label="最多扫描只数" tooltip="全市场个股上限，防超时">
-                        <InputNumber min={500} max={8000} step={500} style={{ width: 120 }} />
-                      </Form.Item>
+                          <Form.Item name="threshold" label="阈值">
+                            <InputNumber step={0.0001} style={{ width: 120 }} />
+                          </Form.Item>
 
-                      <Form.Item>
-                        <Button type="primary" onClick={() => void onRun()} loading={running}>
-                          执行选股
-                        </Button>
-                      </Form.Item>
-                    </Form>
+                          <Form.Item name="max_scan" label="最多扫描只数" tooltip="全市场个股上限，防超时">
+                            <InputNumber min={500} max={8000} step={500} style={{ width: 120 }} />
+                          </Form.Item>
+
+                          <Form.Item>
+                            <Button type="primary" onClick={() => void onRun()} loading={running}>
+                              执行选股
+                            </Button>
+                          </Form.Item>
+                        </Form>
+                      ) : (
+                        <Form
+                          form={multiForm}
+                          layout="vertical"
+                          initialValues={{
+                            trade_date: dayjs(),
+                            max_scan: 6000,
+                            combiner_logic: "AND",
+                            primary_cond_idx: 0,
+                            conditions: [
+                              { compare_op: "gt", threshold: 0 },
+                            ],
+                          }}
+                        >
+                          <Space wrap size="middle">
+                            <Form.Item name="trade_date" label="交易日" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                              <DatePicker />
+                            </Form.Item>
+                            <Form.Item name="combiner_logic" label="组合方式" style={{ marginBottom: 0 }}>
+                              <Segmented options={[{ label: "全部满足 (AND)", value: "AND" }, { label: "任一满足 (OR)", value: "OR" }]} />
+                            </Form.Item>
+                            <Form.Item name="max_scan" label="最多扫描" style={{ marginBottom: 0 }}>
+                              <InputNumber min={500} max={8000} step={500} style={{ width: 120 }} />
+                            </Form.Item>
+                          </Space>
+
+                          {/* 条件列表（动态增删） */}
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            💡 勾选"主排序"的条件会用其指标值给结果降序排列；命中的股票在结果中按主条件值从大到小展示。
+                          </Typography.Text>
+                          <Form.Item name="primary_cond_idx" noStyle>
+                            <Radio.Group style={{ width: "100%" }}>
+                              <Form.List name="conditions">
+                                {(fields, { add, remove }) => (
+                                  <Space direction="vertical" size={8} style={{ width: "100%", marginTop: 12 }}>
+                                    {fields.map((field, idx) => (
+                                      <MultiCondRowCard
+                                        key={field.key}
+                                        field={field}
+                                        idx={idx}
+                                        indicators={indicators}
+                                        multiForm={multiForm}
+                                        canRemove={fields.length > 1}
+                                        onRemove={() => remove(field.name)}
+                                      />
+                                    ))}
+                                    <Button
+                                      type="dashed"
+                                      block
+                                      icon={<PlusOutlined />}
+                                      onClick={() => add({ compare_op: "gt", threshold: 0 })}
+                                    >
+                                      添加条件
+                                    </Button>
+                                  </Space>
+                                )}
+                              </Form.List>
+                            </Radio.Group>
+                          </Form.Item>
+
+                          <Form.Item style={{ marginTop: 12, marginBottom: 0 }}>
+                            <Button type="primary" onClick={() => void onRun()} loading={running}>
+                              执行选股
+                            </Button>
+                          </Form.Item>
+                        </Form>
+                      )}
+                    </Space>
                   )}
                 </Card>
 
@@ -566,12 +882,15 @@ export default function ScreeningPage() {
                 {result ? (
                   <Card
                     title={
-                      <Space>
+                      <Space wrap>
                         <span>结果</span>
                         <Tag>
                           {result.trade_date} · 扫描 {result.scanned} · 命中 {result.matched}
                         </Tag>
                         {result.sub_key ? <Tag color="blue">子线 {result.sub_key}</Tag> : null}
+                        <Tag color="geekblue">
+                          {result.adj_mode === "qfq" ? "前复权口径" : (result.adj_mode || "未复权口径")}
+                        </Tag>
                       </Space>
                     }
                   >
@@ -661,7 +980,9 @@ export default function ScreeningPage() {
               <Tag>交易日 {detailRecord.trade_date}</Tag>
               <Tag color="blue">命中 {detailRecord.matched} 只</Tag>
               <Tag>扫描 {detailRecord.scanned} 只</Tag>
-              {detailRecord.compare_op ? (
+              {detailRecord.is_multi ? (
+                <Tag color="purple">多条件</Tag>
+              ) : detailRecord.compare_op ? (
                 <Tag color="geekblue">
                   {detailRecord.sub_key}{" "}
                   {OP_LABEL[detailRecord.compare_op] ?? detailRecord.compare_op}{" "}
@@ -669,6 +990,10 @@ export default function ScreeningPage() {
                 </Tag>
               ) : null}
             </Space>
+            {/* 多条件快照详情 */}
+            {detailRecord.is_multi && detailRecord.logic ? (
+              <LogicDetailView logic={detailRecord.logic} indicators={indicators} />
+            ) : null}
             {/* 命中股票列表 */}
             <StockTable items={detailRecord.items} />
           </Space>

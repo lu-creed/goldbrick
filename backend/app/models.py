@@ -295,6 +295,9 @@ class ScreeningHistory(Base):
     scanned: Mapped[int] = mapped_column(Integer, default=0)               # 实际扫描数量
     matched: Mapped[int] = mapped_column(Integer, default=0)               # 命中数量
     result_json: Mapped[str] = mapped_column(Text, default="[]")           # 命中股票列表 JSON
+    # 多条件策略快照：strategy_snapshot_json 非空表示本次选股走的新多条件路径（见 strategy_engine）。
+    # 老路径（单条件）为空，历史详情页可按旧 compare_op/threshold/sub_key 展示。
+    strategy_snapshot_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class BacktestRecord(Base):
@@ -328,7 +331,20 @@ class BacktestRecord(Base):
     win_rate: Mapped[Optional[float]] = mapped_column(Numeric(6, 2), nullable=True)
     annualized_return: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
     sharpe_ratio: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
+    # 0.0.4-dev：交易成本/成交模型/基准对比参数与冗余指标（老记录为 NULL）
+    commission_rate: Mapped[Optional[float]] = mapped_column(Numeric(8, 6), nullable=True)
+    commission_min: Mapped[Optional[float]] = mapped_column(Numeric(10, 2), nullable=True)
+    stamp_duty_rate: Mapped[Optional[float]] = mapped_column(Numeric(8, 6), nullable=True)
+    slippage_bps: Mapped[Optional[float]] = mapped_column(Numeric(8, 2), nullable=True)
+    lot_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    execution_price: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    benchmark_index: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    benchmark_return_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
+    alpha_pct: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
     result_json: Mapped[str] = mapped_column(Text, default="{}")           # 完整结果 JSON（供详情页使用）
+    # 多条件策略快照：非空表示本次回测走新多条件路径；buy / sell 分别存两侧 logic。
+    buy_strategy_snapshot_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sell_strategy_snapshot_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class DavStockWatch(Base):
@@ -431,3 +447,38 @@ class FundamentalDaily(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (UniqueConstraint("ts_code", "trade_date", name="uq_fundamental_ts_trade_date"),)
+
+
+class Strategy(Base):
+    """多条件策略：由 N 个条件、若干组（组内恒 AND）、以及组间布尔树（combiner）组成。
+
+    kind:
+      - "screen"   选股策略，用 logic_json
+      - "backtest" 回测策略，用 buy_logic_json + sell_logic_json（两侧各一份 logic）
+
+    logic_json 结构（以选股为例）：
+      {
+        "conditions": [{"id": 1, "user_indicator_id": 7, "sub_key": "MA5",
+                        "compare_op": "gt", "threshold": 0}, ...],
+        "groups": [{"id": "G1", "condition_ids": [1, 2]}, {"id": "G2", "condition_ids": [3]}],
+        "combiner": {"op": "OR", "args": [{"ref": "G1"}, {"ref": "G2"}]},
+        "primary_condition_id": 1
+      }
+
+    user_id=NULL 表示系统预置模板（所有用户可见、不可改删）。
+    """
+    __tablename__ = "strategies"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    code: Mapped[str] = mapped_column(String(64), index=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)          # screen / backtest
+    logic_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    buy_logic_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sell_logic_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (UniqueConstraint("user_id", "code", name="uq_strategy_user_code"),)
