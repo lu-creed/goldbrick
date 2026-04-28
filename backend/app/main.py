@@ -46,6 +46,7 @@ from app.scheduler import shutdown_scheduler, start_scheduler
 from app.services.sync_runner import ensure_default_sync_job
 from app.services.indicator_seed import seed_indicators
 from app.services.user_indicator_seed import ensure_default_user_indicators
+from app.services.derivatives_backfill import maybe_start_backfill_on_startup
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +96,8 @@ async def lifespan(app: FastAPI):
         db.close()
     # 6. 启动定时器（根据数据库里的 cron_expr 配置触发定时同步）
     start_scheduler()
+    # 7. 涨跌停连续天数存量回填（仅在版本号落后时触发一次，后台线程执行，不 block 启动）
+    maybe_start_backfill_on_startup()
     log.info("app started, scheduler on")
     yield  # 这里应用正常运行，处理请求
     # 5. 关闭阶段：停止定时器
