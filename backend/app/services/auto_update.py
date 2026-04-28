@@ -76,6 +76,15 @@ def _run_git(*args: str, timeout: int = 60) -> tuple[int, str, str]:
             timeout=timeout,
         )
         return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return -1, "", (
+            f"git {args[0]} 超时（>{timeout}s）；"
+            "可能是国内访问 GitHub 缓慢，建议配置 HTTP 代理：\n"
+            "  git config --global http.proxy http://<your-proxy>:port\n"
+            "或适当提高系统 git 超时：\n"
+            "  git config --global http.lowSpeedLimit 0\n"
+            "  git config --global http.lowSpeedTime 999"
+        )
     except Exception as ex:
         return -1, "", str(ex)
 
@@ -87,9 +96,16 @@ def _get_local_hash() -> Optional[str]:
 
 def _fetch_and_get_remote_hash() -> tuple[Optional[str], Optional[str]]:
     """fetch 远程 + 读 origin/main 的 hash。返回 (hash, err_detail)。"""
-    code, _, err = _run_git("fetch", "origin", "main", "--quiet", timeout=60)
+    code, _, err = _run_git("fetch", "origin", "main", "--quiet", timeout=120)
     if code != 0:
-        return None, f"git fetch 失败: {err or 'unknown'}"
+        detail = err or "unknown"
+        if "insufficient permission" in detail or "Permission denied" in detail:
+            detail += (
+                f"\n💡 修复：后端进程对 .git/objects 目录没有写权限，"
+                f"请在服务器上执行：\n"
+                f"  sudo chown -R $(whoami) {PROJECT_ROOT}/.git"
+            )
+        return None, f"git fetch 失败: {detail}"
     code, out, err = _run_git("rev-parse", "origin/main", timeout=10)
     if code != 0 or not out:
         return None, f"git rev-parse origin/main 失败: {err or 'empty output'}"
