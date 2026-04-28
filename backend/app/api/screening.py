@@ -71,7 +71,7 @@ def screening_run(body: ScreeningRunIn, current_user=Depends(get_current_user), 
 
     history_record = ScreeningHistory(
         user_id=current_user.id,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(),
         trade_date=str(body.trade_date),
         user_indicator_id=body.user_indicator_id,
         indicator_name=indicator_name,

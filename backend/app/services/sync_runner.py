@@ -91,7 +91,7 @@ def _create_queued_run(trigger: str) -> SyncRun:
     db = SessionLocal()
     try:
         row = SyncRun(
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(),
             trigger=trigger,
             status="queued",
             message="queued",
@@ -174,7 +174,7 @@ def _commit_run_finish(
         run_row.cancel_requested = False
         db.commit()
         return
-    run_row.finished_at = datetime.utcnow()
+    run_row.finished_at = datetime.now()
     run_row.pause_requested = False
     run_row.cancel_requested = False
     job = db.query(SyncJob).order_by(SyncJob.id.asc()).first()
@@ -276,12 +276,12 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
                 raise ValueError("run_id not found")
             run_row.status = "running"
             run_row.message = "running"
-            run_row.started_at = datetime.utcnow()
+            run_row.started_at = datetime.now()
             db.commit()
             db.refresh(run_row)
         else:
             run_row = SyncRun(
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(),
                 trigger=trigger,
                 status="running",
                 message=None,
@@ -341,7 +341,7 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
                 if not symbols:
                     fp.write("no stock rows in pool (instrument_meta / stock list sync required), nothing to sync\n")
                 total_symbols = len(symbols)
-                loop_started_at = datetime.utcnow()
+                loop_started_at = datetime.now()
                 for idx, sym in enumerate(symbols, start=1):
                     # 每只股票开始前检查一次暂停/取消
                     if _poll_pause_or_cancel(db, run_row) == "stop":
@@ -353,7 +353,7 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
                         processed = max(0, idx - 1)
                         eta_text = "calculating"
                         if processed > 0 and total_symbols > processed:
-                            elapsed = (datetime.utcnow() - loop_started_at).total_seconds()
+                            elapsed = (datetime.now() - loop_started_at).total_seconds()
                             avg_per_symbol = elapsed / processed
                             eta_seconds = avg_per_symbol * (total_symbols - processed)
                             eta_text = _fmt_eta(eta_seconds)
@@ -411,7 +411,7 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
                 if failed.status == "cancelled" and failed.finished_at is not None:
                     pass
                 else:
-                    failed.finished_at = datetime.utcnow()
+                    failed.finished_at = datetime.now()
                     failed.status = "failed"
                     failed.message = str(ex)[:2000]
                     failed.pause_requested = False
@@ -466,12 +466,12 @@ def run_symbol_list_sync(
                 raise ValueError("run_id not found")
             run_row.status = "running"
             run_row.message = "running"
-            run_row.started_at = datetime.utcnow()
+            run_row.started_at = datetime.now()
             db.commit()
             db.refresh(run_row)
         else:
             run_row = SyncRun(
-                started_at=datetime.utcnow(),
+                started_at=datetime.now(),
                 trigger=trigger,
                 status="running",
                 message=None,
@@ -515,7 +515,7 @@ def run_symbol_list_sync(
                     symbols.append(sym)
 
                 total_symbols = len(symbols)
-                loop_started_at = datetime.utcnow()
+                loop_started_at = datetime.now()
                 for idx, sym in enumerate(symbols, start=1):
                     if _poll_pause_or_cancel(db, run_row) == "stop":
                         stopped_early = True
@@ -525,7 +525,7 @@ def run_symbol_list_sync(
                         processed = max(0, idx - 1)
                         eta_text = "calculating"
                         if processed > 0 and total_symbols > processed:
-                            elapsed = (datetime.utcnow() - loop_started_at).total_seconds()
+                            elapsed = (datetime.now() - loop_started_at).total_seconds()
                             avg_per_symbol = elapsed / processed
                             eta_seconds = avg_per_symbol * (total_symbols - processed)
                             eta_text = _fmt_eta(eta_seconds)
@@ -586,7 +586,7 @@ def run_symbol_list_sync(
                 if failed.status == "cancelled" and failed.finished_at is not None:
                     pass
                 else:
-                    failed.finished_at = datetime.utcnow()
+                    failed.finished_at = datetime.now()
                     failed.status = "failed"
                     failed.message = str(ex)[:2000]
                     failed.pause_requested = False

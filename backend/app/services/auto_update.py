@@ -146,7 +146,7 @@ def run_check_once() -> None:
     db = SessionLocal()
     try:
         cfg = get_or_create_config(db)
-        start = datetime.utcnow()
+        start = datetime.now()
         cfg.last_run_at = start
         db.commit()
 
@@ -156,7 +156,7 @@ def run_check_once() -> None:
             return
 
         remote_hash, err = _fetch_and_get_remote_hash()
-        duration = int((datetime.utcnow() - start).total_seconds() * 1000)
+        duration = int((datetime.now() - start).total_seconds() * 1000)
 
         if not remote_hash:
             _add_log(db, "check", "error", err or "获取远程 hash 失败", duration)
@@ -194,7 +194,7 @@ def trigger_check_now() -> None:
 
 def cleanup_old_logs(days: int = 30) -> int:
     """删除 N 天前的 AutoUpdateLog，返回实际删除行数。"""
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now() - timedelta(days=days)
     db = SessionLocal()
     try:
         deleted = (

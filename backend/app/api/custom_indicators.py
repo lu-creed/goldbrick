@@ -345,7 +345,7 @@ def patch_custom_indicator(custom_id: int, body: UserIndicatorPatch, current_use
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
-    row.updated_at = datetime.utcnow()  # 手动更新修改时间
+    row.updated_at = datetime.now()  # 手动更新修改时间
     db.commit()
     db.refresh(row)
     return _user_indicator_to_out(row)

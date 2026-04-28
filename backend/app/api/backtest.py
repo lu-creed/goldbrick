@@ -111,7 +111,7 @@ def backtest_run(body: BacktestRunIn, current_user=Depends(get_current_user), db
 
     record = BacktestRecord(
         user_id=current_user.id,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(),
         start_date=str(body.start_date),
         end_date=str(body.end_date),
         user_indicator_id=body.user_indicator_id,

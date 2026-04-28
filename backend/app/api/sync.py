@@ -319,7 +319,7 @@ def cancel_sync_run(run_id: int, force: bool = False, _admin=Depends(get_current
         run.pause_requested = False
         run.cancel_requested = False
         run.status = "cancelled"
-        run.finished_at = datetime.utcnow()
+        run.finished_at = datetime.now()
         tail = "[强制结束：任务可能已无活跃工作线程，已在库中收口]"
         base = (run.message or "").strip()
         run.message = (f"{base} {tail}" if base else tail)[:1900]

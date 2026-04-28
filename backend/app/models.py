@@ -27,7 +27,7 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(128), nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
 class Symbol(Base):
@@ -41,8 +41,8 @@ class Symbol(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     ts_code: Mapped[str] = mapped_column(String(32), unique=True, index=True)  # 证券代码，如 600000.SH
     name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)      # 股票名称，如 浦发银行
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # ORM 关联：通过 symbol.bars 可直接访问该股的全部日线列表
     bars: Mapped[List["BarDaily"]] = relationship(back_populates="symbol")
@@ -73,8 +73,8 @@ class BarDaily(Base):
     consecutive_up_days: Mapped[int] = mapped_column(Integer, default=0)          # 连续上涨天数（未必涨停）
     consecutive_down_days: Mapped[int] = mapped_column(Integer, default=0)        # 连续下跌天数
     source: Mapped[str] = mapped_column(String(32), default="tushare")            # 数据来源
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     symbol: Mapped["Symbol"] = relationship(back_populates="bars")
 
@@ -96,8 +96,8 @@ class AdjFactorDaily(Base):
     trade_date: Mapped[Date] = mapped_column(Date, index=True)
     adj_factor: Mapped[float] = mapped_column(Numeric(18, 8))  # 复权因子（≥1.0，分红后会重新计算历史值）
     source: Mapped[str] = mapped_column(String(32), default="tushare")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (UniqueConstraint("symbol_id", "trade_date", name="uq_symbol_adj_trade_date"),)
 
@@ -117,7 +117,7 @@ class SyncJob(Base):
     last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True) # 上次运行时间
     last_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)    # 上次状态：success/failed/cancelled
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)           # 上次失败原因
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class SyncRun(Base):
@@ -132,7 +132,7 @@ class SyncRun(Base):
     __tablename__ = "sync_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     trigger: Mapped[str] = mapped_column(String(32))    # schedule（定时触发）或 manual（手动触发）
     status: Mapped[str] = mapped_column(String(32))     # queued / running / paused / success / failed / cancelled
@@ -152,7 +152,7 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)     # 配置键，如 tushare_token
     value: Mapped[str] = mapped_column(Text, default="")               # 配置值（均以字符串存储）
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class InstrumentMeta(Base):
@@ -173,7 +173,7 @@ class InstrumentMeta(Base):
     # 个股：Tushare stock_basic 的 market（主板/创业板/科创板等）、exchange（SSE/SZSE/BSE）
     market: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     exchange: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class Indicator(Base):
@@ -267,8 +267,8 @@ class UserIndicator(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expr: Mapped[str] = mapped_column(Text, default="")
     definition_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (UniqueConstraint("user_id", "code", name="uq_user_indicator_user_code"),)
 
@@ -284,7 +284,7 @@ class ScreeningHistory(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
     trade_date: Mapped[str] = mapped_column(String(16))                    # 选股交易日，如 2024-01-10
     user_indicator_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)   # 指标 ID（指标被删除后为 null）
     indicator_name: Mapped[str] = mapped_column(String(128), default="")   # 指标展示名（冗余，防指标删除后丢失）
@@ -308,7 +308,7 @@ class BacktestRecord(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
     start_date: Mapped[str] = mapped_column(String(16))                    # 回测开始日
     end_date: Mapped[str] = mapped_column(String(16))                      # 回测结束日
     user_indicator_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -350,8 +350,8 @@ class DavStockWatch(Base):
     auto_payout_ratio: Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)   # AKShare 自动填充
     auto_eps: Mapped[Optional[float]] = mapped_column(Numeric(12, 4), nullable=True)            # AKShare 自动填充
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (UniqueConstraint("user_id", "ts_code", name="uq_dav_user_ts_code"),)
 
@@ -370,7 +370,7 @@ class WatchlistStock(Base):
     ts_code: Mapped[str] = mapped_column(String(32), index=True)
     name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     note: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
     __table_args__ = (UniqueConstraint("user_id", "ts_code", name="uq_watchlist_user_ts_code"),)
 
@@ -389,7 +389,7 @@ class AutoUpdateConfig(Base):
     interval_minutes: Mapped[int] = mapped_column(Integer, default=5)                 # 检查频率（分钟），1~1440
     last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # 上次执行检查的时间
     last_commit_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # 上次检查到的远程 commit hash
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class AutoUpdateLog(Base):
@@ -403,7 +403,7 @@ class AutoUpdateLog(Base):
     __tablename__ = "auto_update_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
     action: Mapped[str] = mapped_column(String(16))                                  # check / deploy
     status: Mapped[str] = mapped_column(String(16))                                  # ok / no-change / error
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -427,7 +427,7 @@ class FundamentalDaily(Base):
     total_mv: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)  # 总市值（元）
     circ_mv: Mapped[Optional[float]] = mapped_column(Numeric(20, 4), nullable=True)   # 流通市值（元）
     source: Mapped[str] = mapped_column(String(32), default="akshare")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (UniqueConstraint("ts_code", "trade_date", name="uq_fundamental_ts_trade_date"),)
