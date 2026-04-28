@@ -45,21 +45,41 @@ def set_tushare_token(body: SetTokenReq, _admin=Depends(get_current_admin)):
 
 
 class RebuildIndicatorPreReq(BaseModel):
-    """留空则重建全部股票池标的的日线指标预计算（仅 adj=none）。"""
+    """触发指标预计算重建。
+
+    ts_codes 留空 → 重建全市场。
+    adj_modes 留空 → 默认 ["qfq", "hfq"]（0.0.4-dev 起 hfq 也走缓存，减少图表首屏延迟）。
+    """
     ts_codes: Optional[List[str]] = None
+    adj_modes: Optional[List[str]] = None
 
 
 @router.post("/indicator-pre/rebuild")
 def rebuild_indicator_pre(body: RebuildIndicatorPreReq, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     codes = [c.strip().upper() for c in (body.ts_codes or []) if c and str(c).strip()]
+    adj_modes = [m.strip().lower() for m in (body.adj_modes or []) if m and str(m).strip()] or ["qfq", "hfq"]
+    # 校验：只接受受支持的复权口径
+    valid = {"qfq", "hfq"}
+    invalid = [m for m in adj_modes if m not in valid]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"不支持的 adj_mode: {invalid}（可选 qfq/hfq）")
     if codes:
         syms = db.query(Symbol).filter(Symbol.ts_code.in_(codes)).all()
     else:
         syms = db.query(Symbol).order_by(Symbol.ts_code.asc()).all()
     total_rows = 0
     done = 0
+    per_adj: dict[str, int] = {}
     for sym in syms:
-        total_rows += rebuild_indicator_pre_for_symbol(db, sym.id, "none")
+        for mode in adj_modes:
+            n = rebuild_indicator_pre_for_symbol(db, sym.id, mode)
+            total_rows += n
+            per_adj[mode] = per_adj.get(mode, 0) + n
         done += 1
-    return {"symbols": done, "rows_written": total_rows}
+    return {
+        "symbols": done,
+        "rows_written": total_rows,
+        "adj_modes": adj_modes,
+        "per_adj_rows": per_adj,
+    }
 

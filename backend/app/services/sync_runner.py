@@ -369,13 +369,16 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
                             adj_fail_count += 1
                         # 重算涨跌停连续天数（需要全量历史数据）
                         recompute_consecutive_for_symbol(db, sym.id)
-                        # 预计算内置指标缓存（qfq 前复权）
-                        try:
-                            n_pre = rebuild_indicator_pre_for_symbol(db, sym.id, "qfq")
-                            if n_pre:
-                                fp.write(f"  indicator_pre_daily(qfq) rows={n_pre} {sym.ts_code}\n")
-                        except Exception as ex_pre:  # noqa: BLE001
-                            fp.write(f"  WARN indicator_pre_daily {sym.ts_code}: {ex_pre}\n")
+                        # 预计算内置指标缓存：qfq + hfq 双口径
+                        # - qfq：副图 / 选股 / 回测默认口径
+                        # - hfq：长期收益率对比（图表用到时命中缓存，避免内存现算）
+                        for adj_mode in ("qfq", "hfq"):
+                            try:
+                                n_pre = rebuild_indicator_pre_for_symbol(db, sym.id, adj_mode)
+                                if n_pre:
+                                    fp.write(f"  indicator_pre_daily({adj_mode}) rows={n_pre} {sym.ts_code}\n")
+                            except Exception as ex_pre:  # noqa: BLE001
+                                fp.write(f"  WARN indicator_pre_daily({adj_mode}) {sym.ts_code}: {ex_pre}\n")
                         ok_count += 1
                     except Exception as ex:  # noqa: BLE001
                         # 单只股票失败：记录错误但继续处理下一只
