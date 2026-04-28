@@ -324,6 +324,11 @@ export async function resumeSyncRun(runId: number) {
   return data;
 }
 
+/** 删除指定的同步运行记录（仅允许 cancelled 或 failed 状态） */
+export async function deleteSyncRun(runId: number) {
+  await api.delete(`/sync/runs/${runId}`);
+}
+
 /**
  * 请求取消某次同步
  * @param opts.force - true 时直接把状态改为 cancelled（用于卡死或进程重启后的清理）

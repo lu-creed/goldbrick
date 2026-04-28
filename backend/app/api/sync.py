@@ -441,24 +441,36 @@ def post_index_meta_apply(body: IndexMetaApplyRequest, _admin=Depends(get_curren
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 
 
+@router.delete("/runs/{run_id}", status_code=204)
+def delete_sync_run(run_id: int, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
+    """删除已取消或失败的同步记录（仅允许终态记录，不可删除运行中的任务）。"""
+    run = db.query(SyncRun).filter(SyncRun.id == run_id).one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.status not in ("cancelled", "failed"):
+        raise HTTPException(status_code=400, detail="只能删除已取消（cancelled）或失败（failed）的同步记录")
+    db.delete(run)
+    db.commit()
+
+
 @router.get("/data-center", response_model=List[DataCenterRow])
 def data_center(limit: int = 500, _admin=Depends(get_current_admin), db: Session = Depends(get_db)):
     """数据后台汇总：返回所有已登记标的的数据统计信息（K 线条数、复权因子条数、覆盖率等）。
 
-    用单条聚合 SQL（替代 N+1 循环）一次性返回所有标的的统计，适合数据后台全量展示。
+    用子查询先聚合大表，再 JOIN 小结果集，避免三表直连导致的全表扫描（Bug #2 修复）。
 
     返回字段说明：
     - bar_count: 该股已同步的 K 线条数
-    - adj_factor_count: 已同步且与 K 线日期匹配的复权因子条数
-    - adj_factor_coverage_ratio: 复权因子覆盖率（adj_count / bar_count），100% 表示每根 K 线都有复权因子
+    - adj_factor_count: 已同步的复权因子条数
+    - adj_factor_coverage_ratio: 复权因子覆盖率（adj_count / bar_count）
     - adj_factor_synced: 复权因子是否完整同步（coverage=100%）
     """
     # 兼容迁移：若 instrument_meta 为空，先从 symbols 迁移一次
     bootstrap_meta_from_symbols(db)
 
     lim = min(max(limit, 1), 2000)
-    # 单条 SQL：一次查询所有标的的 bar 统计 + adj 匹配数
-    # LEFT JOIN adj 只统计 bar 与 adj 日期完全相同的行（即已正确对齐的复权因子数）
+    # 用子查询分别聚合 bars_daily / adj_factors_daily（各走 symbol_id 索引），
+    # 再 JOIN 小结果集，比三表直连快数十倍（全市场 5000+ 只股时尤其明显）
     sql = text("""
         SELECT
             m.ts_code,
@@ -467,17 +479,26 @@ def data_center(limit: int = 500, _admin=Depends(get_current_admin), db: Session
             m.list_date,
             m.market,
             m.exchange,
-            s.id              AS symbol_id,
-            COUNT(b.id)       AS bar_count,
-            MIN(b.trade_date) AS first_bar_date,
-            MAX(b.trade_date) AS last_bar_date,
-            COUNT(a.id)       AS adj_count
+            s.id                        AS symbol_id,
+            COALESCE(b.bar_count, 0)    AS bar_count,
+            b.first_bar_date,
+            b.last_bar_date,
+            COALESCE(a.adj_count, 0)    AS adj_count
         FROM instrument_meta m
-        LEFT JOIN symbols s       ON s.ts_code = m.ts_code
-        LEFT JOIN bars_daily b    ON b.symbol_id = s.id
-        LEFT JOIN adj_factors_daily a
-               ON a.symbol_id = s.id AND a.trade_date = b.trade_date
-        GROUP BY m.ts_code, m.name, m.asset_type, m.list_date, m.market, m.exchange, s.id
+        LEFT JOIN symbols s ON s.ts_code = m.ts_code
+        LEFT JOIN (
+            SELECT symbol_id,
+                   COUNT(*)         AS bar_count,
+                   MIN(trade_date)  AS first_bar_date,
+                   MAX(trade_date)  AS last_bar_date
+            FROM bars_daily
+            GROUP BY symbol_id
+        ) b ON b.symbol_id = s.id
+        LEFT JOIN (
+            SELECT symbol_id, COUNT(*) AS adj_count
+            FROM adj_factors_daily
+            GROUP BY symbol_id
+        ) a ON a.symbol_id = s.id
         ORDER BY m.asset_type ASC, m.ts_code ASC
         LIMIT :lim
     """)

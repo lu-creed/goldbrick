@@ -14,10 +14,11 @@
   同一行，可能读到缓存里的旧值，而不是其他连接写入的新值（pause/cancel 由 API 线程写入）。
   因此 _poll_pause_or_cancel 每次都 SessionLocal() 新建一个短 Session 来读最新值。
 """
+import io
 import threading
 import time
 import traceback
-from typing import Literal, Optional
+from typing import IO, Literal, Optional, Union
 from datetime import date, datetime
 from pathlib import Path
 
@@ -55,6 +56,30 @@ def _ensure_log_dir() -> Path:
     d = root / settings.log_dir / "sync"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _open_log(log_dir: Path, fname: str, run_row: SyncRun, db: Session) -> tuple[Union[IO, io.StringIO], Optional[Path]]:
+    """尝试打开日志文件；若目录无写权限则退化为内存缓冲，不阻断同步流程。
+
+    Returns:
+        (fp, log_path): log_path 为 None 表示使用了内存缓冲（权限问题）。
+    """
+    try:
+        log_path = (log_dir / fname).resolve()
+        fp = open(log_path, "w", encoding="utf-8")  # noqa: WPS515
+        run_row.log_path = str(log_path)
+        db.commit()
+        return fp, log_path
+    except OSError as exc:
+        # 无法写入磁盘（常见于权限不足，如 /opt/goldbrick 目录被 root 锁住）
+        # 退化为内存 StringIO，同步仍正常运行，错误原因写入 message 字段
+        warn = f"[WARN] 日志文件无法创建 ({exc})，切换为内存日志；请检查 {log_dir} 目录写权限\n"
+        buf = io.StringIO()
+        buf.write(warn)
+        run_row.log_path = None
+        run_row.message = warn.strip()[:400]
+        db.commit()
+        return buf, None
 
 
 def _create_queued_run(trigger: str) -> SyncRun:
@@ -268,16 +293,14 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
 
         # 日志文件名格式：20240110_180000_123.log（时间+run_id）
         fname = f"{run_row.started_at.strftime('%Y%m%d_%H%M%S')}_{run_row.id}.log"
-        log_path = (log_dir / fname).resolve()
 
         # 默认日期范围：从 daterange_start_default() 到今天
         end = date.today()
         start = daterange_start_default()
 
         # 先打开文件再 commit log_path：避免「库里有路径但文件尚不存在」的窗口，前端打开日志 404。
-        with open(log_path, "w", encoding="utf-8") as fp:
-            run_row.log_path = str(log_path)
-            db.commit()
+        fp, log_path = _open_log(log_dir, fname, run_row, db)
+        with fp:
             fp.write(f"trigger={trigger} start={start} end={end}\n")
             fp.flush()
             total = 0
@@ -463,9 +486,8 @@ def run_symbol_list_sync(
 
         # 统一大写并去除空白
         norm_codes = [c.strip().upper() for c in ts_codes if c and c.strip()]
-        with open(log_path, "w", encoding="utf-8") as fp:
-            run_row.log_path = str(log_path)
-            db.commit()
+        fp, _log_path = _open_log(log_dir, fname, run_row, db)
+        with fp:
             start_text = start.isoformat() if start is not None else "from_listing"
             fp.write(
                 f"trigger={trigger} start={start_text} end={end.isoformat()} codes={len(norm_codes)}\n"

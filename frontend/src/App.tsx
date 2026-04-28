@@ -10,8 +10,8 @@
  * 当用户点击菜单或浏览器地址栏变化时，<Routes> 会根据当前 URL
  * 找到匹配的 <Route>，然后渲染对应的页面组件。
  */
-import { Checkbox, Drawer, Layout, Menu, Modal, Typography, theme } from "antd";
-import { MenuOutlined } from "@ant-design/icons";
+import { Checkbox, Drawer, Dropdown, Layout, Menu, Modal, Typography, theme } from "antd";
+import { DownOutlined, MenuOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useIsMobile } from "./hooks/useIsMobile";
@@ -24,6 +24,7 @@ import ScreeningPage from "./pages/ScreeningPage";
 import SentimentPage from "./pages/SentimentPage";
 import StockListPage from "./pages/StockListPage";
 import SyncPage from "./pages/SyncPage";
+import SyncLogsPage from "./pages/SyncLogsPage";
 import BacktestPage from "./pages/BacktestPage";
 import BacktestHistoryPage from "./pages/BacktestHistoryPage";
 import DavPage from "./pages/DavPage";
@@ -45,10 +46,11 @@ const { Text } = Typography;
  * @param loc - 当前位置对象，包含 pathname（路径）和 hash（#后面的部分）
  * @returns 应该选中的菜单项 key 数组
  */
-function menuSelectedKeys(loc: { pathname: string; hash: string }): string[] {
-  const { pathname, hash } = loc;
+function menuSelectedKeys(loc: { pathname: string }): string[] {
+  const { pathname } = loc;
   // /sync 页面有两个子区域，通过 hash 区分
-  if (pathname === "/sync") return hash === "#sync-runs" ? ["m-sync-logs"] : ["m-data-sync"];
+  if (pathname === "/sync") return ["m-data-sync"];
+  if (pathname === "/sync/logs") return ["m-sync-logs"];
   if (pathname === "/data-center") return ["m-data-pool"];
   if (pathname === "/stock-list") return ["m-stock-list"];
   if (pathname === "/replay") return ["m-replay"];
@@ -126,15 +128,17 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
 
   // ── 首次访问免责声明 Modal ─────────────────────────────────
-  // localStorage 里存了标志位时说明用户已阅读过，不再弹窗
+  // 每个用户独立记录是否已阅读（key 含用户名，避免换账号后跳过）
+  const disclaimerKey = `goldbrick_disclaimer_read_${currentUser.username}`;
   const [disclaimerOpen, setDisclaimerOpen] = useState(
-    () => localStorage.getItem("goldbrick_disclaimer_read") !== "1",
+    () => localStorage.getItem(disclaimerKey) !== "1",
   );
   const [disclaimerChecked, setDisclaimerChecked] = useState(false);
+  const [disclaimerViewOpen, setDisclaimerViewOpen] = useState(false);
 
   /** 用户勾选「已阅读」并点击确认后，记录标志位并关闭弹窗 */
   function handleDisclaimerOk() {
-    localStorage.setItem("goldbrick_disclaimer_read", "1");
+    localStorage.setItem(disclaimerKey, "1");
     setDisclaimerOpen(false);
   }
 
@@ -146,7 +150,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
       children: [
         { key: "m-data-sync", label: <Link to="/sync" onClick={() => setNavDrawerOpen(false)}>数据同步</Link> },
         { key: "m-data-pool", label: <Link to="/data-center" onClick={() => setNavDrawerOpen(false)}>数据池</Link> },
-        { key: "m-sync-logs", label: <Link to="/sync#sync-runs" onClick={() => setNavDrawerOpen(false)}>同步日志</Link> },
+        { key: "m-sync-logs", label: <Link to="/sync/logs" onClick={() => setNavDrawerOpen(false)}>同步日志</Link> },
       ],
     }] : []),
     {
@@ -221,27 +225,46 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
         {/* 移动端：占位撑开空间 */}
         {isMobile && <div style={{ flex: 1 }} />}
 
-        {/* 当前用户 + 登出 */}
+        {/* 当前用户下拉菜单 */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: isMobile ? 0 : 16, flexShrink: 0 }}>
-          {!isMobile && (
-            <Typography.Text style={{ fontSize: 13, color: token.colorTextSecondary }}>
-              {currentUser.username}{currentUser.is_admin ? "（管理员）" : ""}
-            </Typography.Text>
-          )}
-          <button
-            onClick={onLogout}
-            style={{
-              background: "none",
-              border: `1px solid ${token.colorBorderSecondary}`,
-              borderRadius: 4,
-              color: token.colorTextSecondary,
-              cursor: "pointer",
-              fontSize: 12,
-              padding: "2px 10px",
+          <Dropdown
+            menu={{
+              items: [
+                {
+                  key: "disclaimer",
+                  label: "查看免责声明",
+                  onClick: () => setDisclaimerViewOpen(true),
+                },
+                { type: "divider" },
+                {
+                  key: "logout",
+                  label: "退出登录",
+                  danger: true,
+                  onClick: onLogout,
+                },
+              ],
             }}
+            trigger={["click"]}
           >
-            退出
-          </button>
+            <button
+              style={{
+                background: "none",
+                border: `1px solid ${token.colorBorderSecondary}`,
+                borderRadius: 4,
+                color: token.colorTextSecondary,
+                cursor: "pointer",
+                fontSize: 12,
+                padding: "2px 10px",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              {!isMobile && `${currentUser.username}${currentUser.is_admin ? "（管理员）" : ""}`}
+              {isMobile && currentUser.username}
+              <DownOutlined style={{ fontSize: 10 }} />
+            </button>
+          </Dropdown>
 
           {/* 移动端汉堡按钮 */}
           {isMobile && (
@@ -317,6 +340,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
             <Route path="/sell" element={<Navigate to="/" replace />} />
             <Route path="/indicators" element={<IndicatorLibPage />} />
             <Route path="/sync" element={<SyncPage />} />
+            <Route path="/sync/logs" element={<SyncLogsPage />} />
             <Route path="/data-center" element={<DataCenterPage />} />
             <Route path="/screening" element={<ScreeningPage />} />
             <Route path="/sentiment" element={<SentimentPage />} />
@@ -399,6 +423,43 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
           >
             我已阅读并理解以上声明，不会将本工具内容作为投资依据
           </Checkbox>
+        </div>
+      </Modal>
+
+      {/* ── 用户菜单「查看免责声明」弹窗（只读，可直接关闭） ── */}
+      <Modal
+        title="使用须知 · 免责声明"
+        open={disclaimerViewOpen}
+        onCancel={() => setDisclaimerViewOpen(false)}
+        onOk={() => setDisclaimerViewOpen(false)}
+        okText="关闭"
+        cancelButtonProps={{ style: { display: "none" } }}
+        width={Math.min(540, window.innerWidth * 0.95)}
+      >
+        <div style={{ fontSize: 14, lineHeight: 1.8, color: "#d9d9d9" }}>
+          <p style={{ marginBottom: 12 }}>
+            <strong>GoldBrick</strong> 是一款个人使用的股票数据工具，提供以下服务：
+          </p>
+          <ul style={{ paddingLeft: 20, marginBottom: 16 }}>
+            <li>行情数据查询（K 线、换手率、涨跌幅等）</li>
+            <li>基于自定义指标的条件选股</li>
+            <li>历史数据回测（模拟盈亏，不含实盘执行）</li>
+            <li>大V看板（辅助参考，非推荐依据）</li>
+          </ul>
+          <div
+            style={{
+              background: "rgba(255, 77, 79, 0.08)",
+              border: "1px solid rgba(255, 77, 79, 0.3)",
+              borderRadius: 6,
+              padding: "10px 14px",
+            }}
+          >
+            <Text style={{ color: "#ff7875", fontSize: 13 }}>
+              ⚠ 本工具所有内容均为客观数据呈现，<strong>不构成任何投资建议</strong>。
+              历史回测结果不代表未来实际收益。股市存在亏损风险，请根据自身情况独立判断，
+              盈亏自负，与本工具无关。
+            </Text>
+          </div>
         </div>
       </Modal>
     </Layout>

@@ -23,46 +23,32 @@ import {
   Radio,
   Select,
   Space,
-  Progress,
   Switch,
-  Table,
-  Tag,
   Typography,
   Spin,
   message,
 } from "antd";
 import type { RadioChangeEvent } from "antd";
-import type { ColumnsType } from "antd/es/table";
 import { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
 import {
   type SyncJob,
-  type SyncRun,
   type SymbolRow,
   fetchSymbols,
-  cancelSyncRun,
   fetchSyncJob,
-  fetchSyncRuns,
   fetchSyncAllIndexPool,
   fetchSyncAllMarket,
   fetchSyncBySelection,
   fetchTushareTokenStatus,
-  pauseSyncRun,
   getApiErrorMessage,
   setTushareToken,
   triggerSyncRun,
-  resumeSyncRun,
   updateSyncJob,
 } from "../api/client";
-import { zebraRowClass } from "../constants/theme";
 
 export default function SyncPage() {
-  const location = useLocation();
   // job：定时任务配置（cron 表达式、是否启用等）
   const [job, setJob] = useState<SyncJob | null>(null);
-  // runs：最近 30 条同步运行记录
-  const [runs, setRuns] = useState<SyncRun[]>([]);
   // loading：是否正在加载定时任务配置（控制卡片加载状态）
   const [loading, setLoading] = useState(false);
   // running：是否正在触发立即执行（防止重复点击）
@@ -94,15 +80,7 @@ export default function SyncPage() {
   const [fetching, setFetching] = useState(false);
   const [fetchingAll, setFetchingAll] = useState(false);
   const [fetchingAllIndex, setFetchingAllIndex] = useState(false);
-  // runActionId：当前正在操作（暂停/继续/取消）的运行 ID（防止连点）
-  const [runActionId, setRunActionId] = useState<number | null>(null);
 
-  /** 顶栏「同步日志」入口带 #sync-runs 时滚动到运行记录表（对齐 PRD：同步日志） */
-  useEffect(() => {
-    if (location.pathname === "/sync" && location.hash === "#sync-runs") {
-      document.getElementById("sync-runs")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, [location.hash, location.pathname]);
   const [fromListing, setFromListing] = useState(false);
 
   const cronExpr = Form.useWatch("cron_expr", form);
@@ -162,8 +140,6 @@ export default function SyncPage() {
         cron_expr: j.cron_expr,
         enabled: j.enabled,
       });
-      const r = await fetchSyncRuns(30);
-      setRuns(r);
     } catch (e) {
       message.error(getApiErrorMessage(e));
     } finally {
@@ -174,15 +150,6 @@ export default function SyncPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    const hasRunning = runs.some((r) => ["queued", "running", "paused"].includes(r.status));
-    if (!hasRunning) return;
-    const timer = window.setInterval(() => {
-      void refresh({ silent: true });
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [runs, refresh]);
 
   useEffect(() => {
     // 进入页面先查 token 是否已就绪，就绪才拉全 A
@@ -351,59 +318,6 @@ export default function SyncPage() {
     }
   };
 
-  const onPauseRun = async (id: number) => {
-    setRunActionId(id);
-    try {
-      await pauseSyncRun(id);
-      message.success("已请求暂停（当前标的完成后生效）");
-      void refresh({ silent: true });
-    } catch (e) {
-      message.error(getApiErrorMessage(e));
-    } finally {
-      setRunActionId(null);
-    }
-  };
-
-  const onResumeRun = async (id: number) => {
-    setRunActionId(id);
-    try {
-      await resumeSyncRun(id);
-      message.success("已继续");
-      void refresh({ silent: true });
-    } catch (e) {
-      message.error(getApiErrorMessage(e));
-    } finally {
-      setRunActionId(null);
-    }
-  };
-
-  const onCancelRun = async (id: number) => {
-    setRunActionId(id);
-    try {
-      await cancelSyncRun(id);
-      message.success("已请求取消（当前标的完成后停止）");
-      void refresh({ silent: true });
-    } catch (e) {
-      message.error(getApiErrorMessage(e));
-    } finally {
-      setRunActionId(null);
-    }
-  };
-
-  /** 库内直接收口 cancelled：解决后台线程已退出或卡死导致 ordinary 取消无效、长期 running */
-  const onForceCancelRun = async (id: number) => {
-    setRunActionId(id);
-    try {
-      await cancelSyncRun(id, { force: true });
-      message.success("已强制记为已取消；请刷新运行列表");
-      void refresh({ silent: true });
-    } catch (e) {
-      message.error(getApiErrorMessage(e));
-    } finally {
-      setRunActionId(null);
-    }
-  };
-
   const onSetToken = async () => {
     const token = tushareTokenDraft.trim();
     if (!token) {
@@ -424,99 +338,6 @@ export default function SyncPage() {
       setTokenSaving(false);
     }
   };
-
-  const columns: ColumnsType<SyncRun> = [
-    { title: "ID", dataIndex: "id", width: 64 },
-    { title: "开始", dataIndex: "started_at", width: 180 },
-    { title: "结束", dataIndex: "finished_at", width: 180 },
-    { title: "触发", dataIndex: "trigger", width: 100 },
-    { title: "状态", dataIndex: "status", width: 100 },
-    {
-      title: "进度/摘要",
-      dataIndex: "message",
-      render: (_: string | null, record) => {
-        const msg = record.message || "-";
-        const mProg = msg.match(/progress\s+(\d+)\/(\d+)/i);
-        const adjFail = Number(msg.match(/adj_fail=(\d+)/i)?.[1] ?? 0);
-        const hideEta = record.status === "paused" || msg.includes("已暂停");
-        if (!mProg) return msg;
-        const cur = Number(mProg[1] || 0);
-        const total = Number(mProg[2] || 0);
-        const percent = total > 0 ? Math.max(0, Math.min(100, Math.round((cur / total) * 100))) : 0;
-        return (
-          <Space direction="vertical" size={2} style={{ width: "100%" }}>
-            <Space size={4}>
-              <Progress percent={percent} size="small" showInfo={false} style={{ width: 120 }} />
-              {adjFail > 0 && (
-                <Tag color="orange" title="部分标的复权因子拉取失败，查看日志中 [ADJ_FAIL] 条目">
-                  复权因子失败 {adjFail}
-                </Tag>
-              )}
-            </Space>
-            <Typography.Text type="secondary">
-              {msg}
-              {hideEta || msg.includes("eta=") ? "" : "（ETA 计算中）"}
-            </Typography.Text>
-          </Space>
-        );
-      },
-    },
-    {
-      title: "操作",
-      key: "actions",
-      width: 300,
-      render: (_: unknown, record: SyncRun) => {
-        const active = ["queued", "running", "paused"].includes(record.status);
-        if (!active) return "—";
-        const loading = runActionId === record.id;
-        const showPause =
-          (record.status === "queued" || record.status === "running") && !record.pause_requested;
-        const showResume = Boolean(record.pause_requested) || record.status === "paused";
-        return (
-          <Space size="small" wrap>
-            {showPause ? (
-              <Button size="small" loading={loading} onClick={() => void onPauseRun(record.id)}>
-                暂停
-              </Button>
-            ) : null}
-            {showResume ? (
-              <Button size="small" loading={loading} onClick={() => void onResumeRun(record.id)}>
-                继续
-              </Button>
-            ) : null}
-            <Popconfirm title="确定取消本次同步？" onConfirm={() => void onCancelRun(record.id)}>
-              <Button size="small" danger loading={loading}>
-                取消
-              </Button>
-            </Popconfirm>
-            <Popconfirm
-              title="强制结束本条运行？"
-              description="仅当多次点「取消」仍显示 running 时用：直接把状态改为已取消。若仍有工作线程，其会尽快退出。"
-              onConfirm={() => void onForceCancelRun(record.id)}
-            >
-              <Button size="small" danger type="dashed" loading={loading}>
-                强制结束
-              </Button>
-            </Popconfirm>
-          </Space>
-        );
-      },
-    },
-    {
-      title: "日志文件",
-      dataIndex: "log_path",
-      ellipsis: true,
-      render: (_: string | null, record) =>
-        record.log_path ? (
-          <a href={`/api/sync/runs/${record.id}/log`} target="_blank" rel="noreferrer">
-            打开日志
-          </a>
-        ) : (
-          "-"
-        ),
-    },
-  ];
-
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
@@ -684,22 +505,6 @@ export default function SyncPage() {
             <Button onClick={() => void refresh()}>刷新</Button>
           </Space>
         </Form>
-      </Card>
-      <Card id="sync-runs" title="最近运行">
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="协作式取消：在上一只标的整段处理（含单次 Tushare 请求）结束后才会停；该段期间仍为 running。若多次「取消」仍不变，请用「强制结束」在库中直接收口（多为后台线程已丢或进程重启）。日志在任务开始写入后即可打开。"
-        />
-        <Table
-          rowKey="id"
-          size="small"
-          columns={columns}
-          dataSource={runs}
-          rowClassName={zebraRowClass}
-          pagination={{ pageSize: 10 }}
-        />
       </Card>
     </Space>
   );
