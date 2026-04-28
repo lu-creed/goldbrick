@@ -52,22 +52,75 @@ SessionLocal = sessionmaker(
 Base = declarative_base()
 
 
-def ensure_sqlite_instrument_meta_columns() -> None:
-    """为已有 SQLite 库追加 instrument_meta 表的新列（market / exchange）。
+# ── 跨方言迁移辅助（0.0.4-dev：为 Postgres 切换预留）─────────────────
+def _is_sqlite() -> bool:
+    return str(engine.url).startswith("sqlite")
 
-    背景：SQLite 不支持 ALTER TABLE 自动迁移（不像 PostgreSQL/MySQL）。
-    新版本增加了 market/exchange 字段，需要手动用 ALTER TABLE 追加，
-    否则老数据库升级后启动会报「no such column」错误。
+
+def _is_postgres() -> bool:
+    return "postgresql" in str(engine.url)
+
+
+def _table_columns(conn, table_name: str) -> set[str]:
+    """返回 table 当前所有列名的集合；表不存在返回空集。同时支持 SQLite / PostgreSQL。"""
+    if _is_sqlite():
+        rows = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+        return {r[1] for r in rows}
+    if _is_postgres():
+        rows = conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = :t"
+            ),
+            {"t": table_name},
+        ).fetchall()
+        return {r[0] for r in rows}
+    # 其他方言：保守返回空，让外层决定是否 no-op
+    return set()
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    return bool(_table_columns(conn, table_name))
+
+
+def _pg_type(sqlite_type: str) -> str:
+    """把 SQLite 方言的 VARCHAR(N)/NUMERIC(p,s)/INTEGER 映射为 PG 对等类型。
+
+    目前我们用到的类型字面量相对窄，直接大小写映射即可。PG 的 NUMERIC 与 SQLite 语义一致、
+    VARCHAR(N) 在 PG 也合法，所以多数情况下原样就行。
     """
-    if not str(engine.url).startswith("sqlite"):
+    return sqlite_type  # 当前使用的类型都是 PG 兼容的子集
+
+
+def _add_column_if_missing(conn, table: str, column: str, col_type: str) -> None:
+    """跨方言版 ALTER TABLE ADD COLUMN：缺列时才加。
+
+    - SQLite：必须先 PRAGMA 查列再 ADD COLUMN（SQLite 不支持 IF NOT EXISTS）。
+    - PostgreSQL：直接用 ADD COLUMN IF NOT EXISTS（PG ≥ 9.6）。
+    """
+    if _is_postgres():
+        conn.execute(
+            text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {_pg_type(col_type)}")
+        )
+        return
+    # SQLite 或其他：先查再加
+    if not _table_exists(conn, table):
+        return
+    cols = _table_columns(conn, table)
+    if column not in cols:
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+
+
+def ensure_sqlite_instrument_meta_columns() -> None:
+    """为已有库追加 instrument_meta 表的新列（market / exchange）。
+
+    历史函数名保留以减少调用点变更；实际内部同时支持 SQLite 与 PostgreSQL。
+    """
+    if not (_is_sqlite() or _is_postgres()):
         return
     with engine.begin() as conn:
-        rows = conn.execute(text("PRAGMA table_info(instrument_meta)")).fetchall()
-        names = {r[1] for r in rows}
-        if "market" not in names:
-            conn.execute(text("ALTER TABLE instrument_meta ADD COLUMN market VARCHAR(64)"))
-        if "exchange" not in names:
-            conn.execute(text("ALTER TABLE instrument_meta ADD COLUMN exchange VARCHAR(16)"))
+        _add_column_if_missing(conn, "instrument_meta", "market", "VARCHAR(64)")
+        _add_column_if_missing(conn, "instrument_meta", "exchange", "VARCHAR(16)")
 
 
 def ensure_symbols_drop_legacy_enabled_column() -> None:
@@ -104,13 +157,10 @@ def ensure_user_indicators_definition_json_column() -> None:
     当用户从旧版（只有 expr 字段）升级到支持多子线 DSL 的新版时，
     需要在已有表里加一列 definition_json 存放 JSON 公式树。
     """
-    if not str(engine.url).startswith("sqlite"):
+    if not (_is_sqlite() or _is_postgres()):
         return
     with engine.begin() as conn:
-        rows = conn.execute(text("PRAGMA table_info(user_indicators)")).fetchall()
-        names = {r[1] for r in rows}
-        if "definition_json" not in names:
-            conn.execute(text("ALTER TABLE user_indicators ADD COLUMN definition_json TEXT"))
+        _add_column_if_missing(conn, "user_indicators", "definition_json", "TEXT")
 
 
 def ensure_sync_runs_control_columns() -> None:
@@ -119,22 +169,23 @@ def ensure_sync_runs_control_columns() -> None:
     这两列用于前端向后台工作线程发送「暂停」和「取消」信号。
     工作线程在每只股票开始前轮询这两列来决定是否暂停/停止。
     """
-    url = str(engine.url)
-    if url.startswith("sqlite"):
-        with engine.begin() as conn:
-            rows = conn.execute(text("PRAGMA table_info(sync_runs)")).fetchall()
-            names = {r[1] for r in rows}
-            if "pause_requested" not in names:
+    if not (_is_sqlite() or _is_postgres()):
+        return
+    # 这两列是 NOT NULL DEFAULT 0/false，跨方言表达式有差异，单独处理
+    with engine.begin() as conn:
+        if not _table_exists(conn, "sync_runs"):
+            return
+        cols = _table_columns(conn, "sync_runs")
+        if _is_sqlite():
+            if "pause_requested" not in cols:
                 conn.execute(
                     text("ALTER TABLE sync_runs ADD COLUMN pause_requested BOOLEAN DEFAULT 0 NOT NULL")
                 )
-            if "cancel_requested" not in names:
+            if "cancel_requested" not in cols:
                 conn.execute(
                     text("ALTER TABLE sync_runs ADD COLUMN cancel_requested BOOLEAN DEFAULT 0 NOT NULL")
                 )
-        return
-    if "postgresql" in url:
-        with engine.begin() as conn:
+        else:  # postgres
             conn.execute(
                 text(
                     "ALTER TABLE sync_runs ADD COLUMN IF NOT EXISTS pause_requested "
@@ -164,17 +215,56 @@ def ensure_backtest_records_table() -> None:
     pass
 
 
-def ensure_dav_auto_fundamental_columns() -> None:
-    """为 dav_stock_watch 追加 auto_payout_ratio / auto_eps 列（AKShare 自动填充字段）。"""
-    if not str(engine.url).startswith("sqlite"):
+def ensure_backtest_records_columns() -> None:
+    """为老 backtest_records 表追加 0.0.4-dev 新增的成本/成交/基准列。
+
+    新列全部 nullable，老记录读出来为 None，前端以 "—" 占位，不影响现有功能。
+    """
+    if not (_is_sqlite() or _is_postgres()):
+        return
+    new_cols = [
+        ("commission_rate", "NUMERIC(8,6)"),
+        ("commission_min", "NUMERIC(10,2)"),
+        ("stamp_duty_rate", "NUMERIC(8,6)"),
+        ("slippage_bps", "NUMERIC(8,2)"),
+        ("lot_size", "INTEGER"),
+        ("execution_price", "VARCHAR(16)"),
+        ("benchmark_index", "VARCHAR(32)"),
+        ("benchmark_return_pct", "NUMERIC(10,4)"),
+        ("alpha_pct", "NUMERIC(10,4)"),
+    ]
+    with engine.begin() as conn:
+        if not _table_exists(conn, "backtest_records"):
+            return  # 表不存在，create_all 随后会建新版
+        for col, col_type in new_cols:
+            _add_column_if_missing(conn, "backtest_records", col, col_type)
+
+
+def ensure_strategy_snapshot_columns() -> None:
+    """为老 screening_history / backtest_records 表追加多条件策略快照列。
+
+    新列全部 nullable：
+      - screening_history.strategy_snapshot_json
+      - backtest_records.buy_strategy_snapshot_json
+      - backtest_records.sell_strategy_snapshot_json
+
+    老记录列值为 NULL，API 读取时回退到旧字段（compare_op/threshold 等）展示。
+    """
+    if not (_is_sqlite() or _is_postgres()):
         return
     with engine.begin() as conn:
-        rows = conn.execute(text("PRAGMA table_info(dav_stock_watch)")).fetchall()
-        names = {r[1] for r in rows}
-        if "auto_payout_ratio" not in names:
-            conn.execute(text("ALTER TABLE dav_stock_watch ADD COLUMN auto_payout_ratio NUMERIC(8,4)"))
-        if "auto_eps" not in names:
-            conn.execute(text("ALTER TABLE dav_stock_watch ADD COLUMN auto_eps NUMERIC(12,4)"))
+        _add_column_if_missing(conn, "screening_history", "strategy_snapshot_json", "TEXT")
+        _add_column_if_missing(conn, "backtest_records", "buy_strategy_snapshot_json", "TEXT")
+        _add_column_if_missing(conn, "backtest_records", "sell_strategy_snapshot_json", "TEXT")
+
+
+def ensure_dav_auto_fundamental_columns() -> None:
+    """为 dav_stock_watch 追加 auto_payout_ratio / auto_eps 列（AKShare 自动填充字段）。"""
+    if not (_is_sqlite() or _is_postgres()):
+        return
+    with engine.begin() as conn:
+        _add_column_if_missing(conn, "dav_stock_watch", "auto_payout_ratio", "NUMERIC(8,4)")
+        _add_column_if_missing(conn, "dav_stock_watch", "auto_eps", "NUMERIC(12,4)")
 
 
 def migrate_for_user_system() -> None:
@@ -183,10 +273,24 @@ def migrate_for_user_system() -> None:
     幂等：通过检查 users 表是否已存在判断是否已迁移。
     删除顺序从子表到父表，避免外键约束错误。
     """
-    if not str(engine.url).startswith("sqlite"):
+    if not (_is_sqlite() or _is_postgres()):
         return
     with engine.begin() as conn:
-        tables = {r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if _is_sqlite():
+            tables = {
+                r[0] for r in conn.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='table'")
+                ).fetchall()
+            }
+        else:
+            tables = {
+                r[0] for r in conn.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = 'public'"
+                    )
+                ).fetchall()
+            }
         if "users" in tables:
             return
         for t in [
