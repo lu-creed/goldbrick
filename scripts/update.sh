@@ -22,7 +22,7 @@ export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.nvm/versions/node/current/bin:$
     BEFORE_REQ_HASH=$(md5sum backend/requirements.txt 2>/dev/null | awk '{print $1}')
 
     echo "> git pull origin main"
-    git pull origin main
+    GIT_TERMINAL_PROMPT=0 timeout 120 git pull origin main
 
     AFTER_PKG_HASH=$(md5sum frontend/package.json 2>/dev/null | awk '{print $1}')
     AFTER_REQ_HASH=$(md5sum backend/requirements.txt 2>/dev/null | awk '{print $1}')
