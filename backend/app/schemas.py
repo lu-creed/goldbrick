@@ -620,6 +620,53 @@ class BacktestRunIn(BaseModel):
         return self
 
 
+# ---- 参数敏感性扫描(0.0.4-dev 产品力迭代)----
+
+class SensitivityScanRequest(BaseModel):
+    """启动参数敏感性扫描的请求体。
+
+    base_params:基础回测参数(等价于 BacktestRunIn 的全部字段),每个扫描点会以此为模板,
+                仅替换 param_path 指向的字段。
+    param_path: 要扫描的参数路径:
+        - 顶层字段:"buy_threshold" / "sell_threshold" / "max_positions" / ...
+        - 多条件嵌套:"buy_logic.conditions[0].threshold"
+    values: 扫描点列表,2-15 个数值。
+    """
+    base_params: dict
+    param_path: str = Field(..., min_length=1, max_length=128)
+    values: list[float] = Field(..., min_length=2, max_length=15)
+
+
+class SensitivityPoint(BaseModel):
+    """单个扫描点的结果。失败的点 metrics=None 且 error 非空。"""
+    value: float
+    metrics: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class SensitivityScanStatus(BaseModel):
+    """异步敏感性扫描任务的状态快照。
+
+    status:
+        "running"  扫描进行中,progress/total 表示「已完成/总数」
+        "done"     全部跑完,结果在 result
+        "failed"   整体失败(如参数非法),错误信息在 error
+    """
+    task_id: str
+    status: Literal["running", "done", "failed"]
+    progress: int = 0
+    total: int = 0
+    param_path: str
+    result: Optional[list[SensitivityPoint]] = None
+    error: Optional[str] = None
+
+
+class SensitivityScanCreateOut(BaseModel):
+    """启动扫描立即返回的响应:只返回 task_id,真结果通过轮询 /status/{task_id} 获取。"""
+    task_id: str
+    total: int
+
+
 class BacktestTradeRow(BaseModel):
     """回测结果中的一笔交易记录。
 
@@ -924,6 +971,7 @@ class StrategyCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=64)
     display_name: str = Field(..., min_length=1, max_length=128)
     description: Optional[str] = None
+    notes: Optional[str] = None  # Markdown 格式的研究笔记(可选)
     kind: Literal["screen", "backtest"]
     logic: Optional[StrategyLogic] = None
     buy_logic: Optional[StrategyLogic] = None
@@ -952,6 +1000,7 @@ class StrategyPatch(BaseModel):
     """
     display_name: Optional[str] = Field(None, min_length=1, max_length=128)
     description: Optional[str] = None
+    notes: Optional[str] = None  # Markdown 研究笔记;传 "" 空串表示清空
     logic: Optional[StrategyLogic] = None
     buy_logic: Optional[StrategyLogic] = None
     sell_logic: Optional[StrategyLogic] = None
@@ -963,6 +1012,7 @@ class StrategyOut(BaseModel):
     code: str
     display_name: str
     description: Optional[str] = None
+    notes: Optional[str] = None  # Markdown 研究笔记,系统预置策略该字段恒为 None
     kind: Literal["screen", "backtest"]
     logic: Optional[StrategyLogic] = None
     buy_logic: Optional[StrategyLogic] = None

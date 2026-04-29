@@ -103,6 +103,7 @@ def _row_to_out(row: Strategy) -> StrategyOut:
         code=row.code,
         display_name=row.display_name,
         description=row.description,
+        notes=row.notes if row.user_id is not None else None,  # 系统预置策略不返回 notes
         kind=row.kind,  # type: ignore[arg-type]
         logic=parse(row.logic_json),
         buy_logic=parse(row.buy_logic_json),
@@ -204,6 +205,7 @@ def create_strategy(
         code=code,
         display_name=body.display_name.strip(),
         description=(body.description or "").strip() or None,
+        notes=(body.notes or "").strip() or None,
         kind=body.kind,
         logic_json=_dump_logic(body.logic),
         buy_logic_json=_dump_logic(body.buy_logic),
@@ -252,6 +254,10 @@ def update_strategy(
         row.display_name = body.display_name.strip()
     if body.description is not None:
         row.description = (body.description or "").strip() or None
+    if body.notes is not None:
+        # 支持传空串清空 notes:strip 后为空则置 None;否则保留原 Markdown 文本(含换行)
+        trimmed = body.notes.strip()
+        row.notes = trimmed if trimmed else None
     if body.logic is not None:
         row.logic_json = _dump_logic(body.logic)
     if body.buy_logic is not None:
