@@ -27,6 +27,7 @@ import SyncPage from "./pages/SyncPage";
 import SyncLogsPage from "./pages/SyncLogsPage";
 import BacktestPage from "./pages/BacktestPage";
 import BacktestHistoryPage from "./pages/BacktestHistoryPage";
+import StrategyGalleryPage from "./pages/StrategyGalleryPage";
 import DavPage from "./pages/DavPage";
 import LoginPage from "./pages/LoginPage";
 import UserManagementPage from "./pages/UserManagementPage";
@@ -61,6 +62,7 @@ function menuSelectedKeys(loc: { pathname: string }): string[] {
   if (pathname === "/dav") return ["m-dav"];
   if (pathname === "/backtest/history") return ["m-backtest-records"];
   if (pathname === "/backtest") return ["m-backtest-start"];
+  if (pathname === "/gallery") return ["m-strategy-gallery"];
   if (pathname === "/admin/users") return ["m-user-mgmt"];
   if (pathname === "/admin/auto-update") return ["m-auto-update"];
   if (pathname === "/") return ["m-kline"];
@@ -170,6 +172,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
       key: "g-backtest",
       label: "股票回测",
       children: [
+        { key: "m-strategy-gallery", label: <Link to="/gallery" onClick={() => setNavDrawerOpen(false)}>策略广场 🆕</Link> },
         { key: "m-backtest-start", label: <Link to="/backtest" onClick={() => setNavDrawerOpen(false)}>开始回测</Link> },
         { key: "m-backtest-records", label: <Link to="/backtest/history" onClick={() => setNavDrawerOpen(false)}>回测记录</Link> },
       ],
@@ -342,6 +345,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
             <Route path="/screening" element={<ScreeningPage />} />
             <Route path="/sentiment" element={<SentimentPage />} />
             {/* 回测功能 */}
+            <Route path="/gallery" element={<StrategyGalleryPage />} />
             <Route path="/backtest" element={<BacktestPage />} />
             <Route path="/backtest/history" element={<BacktestHistoryPage />} />
             {/* 系统管理（仅管理员可访问） */}

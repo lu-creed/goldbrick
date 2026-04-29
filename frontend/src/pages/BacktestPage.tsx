@@ -61,6 +61,7 @@ import {
   fetchTradeChart,
   getApiErrorMessage,
   getSensitivityScanStatus,
+  getStrategy,
   runBacktest,
   startSensitivityScan,
   type BacktestRunOut,
@@ -74,8 +75,10 @@ import {
   type UserIndicatorOut,
 } from "../api/client";
 import StrategyDrawer from "../components/StrategyDrawer";
+import StarCard from "../components/StarCard";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { computeStars, generateNarrative } from "../utils/backtestNarrative";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -1106,6 +1109,30 @@ export default function BacktestPage() {
 
   useEffect(() => { void loadIndicators(); }, [loadIndicators]);
 
+  // 策略广场跳转:/backtest?preset=<strategy_id> → 拉策略 → 自动填表
+  // 只消费一次,避免刷新页面重复弹提示;依赖 indicators 加载完成(filterForm 才能找到对应 user_indicator)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const presetId = params.get("preset");
+    if (!presetId || indicators.length === 0) return;
+    const id = Number(presetId);
+    if (Number.isNaN(id)) return;
+    // 清掉 URL 参数,避免刷新/返回时重复触发
+    navigate(location.pathname, { replace: true });
+    (async () => {
+      try {
+        const s = await getStrategy(id);
+        handleLoadStrategy(s);
+        message.info(`已加载广场策略「${s.display_name}」,请确认时间范围和资金后点开始回测`);
+      } catch (e) {
+        message.error(getApiErrorMessage(e));
+      }
+    })();
+    // handleLoadStrategy 依赖 form/multiForm/mode,这里故意不放 deps 以免重复触发;
+    // indicators 是关键触发条件 — 指标没加载完 form 的 user_indicator_id 没法渲染出来
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [indicators.length]);
+
   // 指标列表加载完成后，若携带了来自选股页的参数则自动填入
   useEffect(() => {
     if (!indicators.length || !fromScreeningRef.current) return;
@@ -2048,6 +2075,54 @@ export default function BacktestPage() {
             <Tag>滑点 {result.slippage_bps}bp</Tag>
             <Tag>整手 {result.lot_size} 股</Tag>
           </Space>
+
+          {/* 人话总结 + 四维星级(Phase 1:易用性迭代) — 让非量化用户一眼看懂回测结果 */}
+          <Card
+            title={<Space>📊 <span>本次回测总结</span></Space>}
+            size="small"
+            styles={{ body: { paddingTop: 12 } }}
+          >
+            <Typography.Paragraph style={{ whiteSpace: "pre-line", marginBottom: 16 }}>
+              {generateNarrative(result)}
+            </Typography.Paragraph>
+            <Row gutter={[12, 12]}>
+              {(() => {
+                const stars = computeStars(result);
+                return (
+                  <>
+                    <Col xs={12} md={6}>
+                      <StarCard
+                        title="收益性"
+                        stars={stars.profitability}
+                        hint="5 星:跑赢基准 20+ 百分点,或无基准时绝对收益 > 30%。规则透明,按结果硬打分。"
+                      />
+                    </Col>
+                    <Col xs={12} md={6}>
+                      <StarCard
+                        title="风险控制"
+                        stars={stars.risk_control}
+                        hint="主要看最大回撤:<8% 五星,<15% 四星,<20% 三星,<30% 二星,更大一星。"
+                      />
+                    </Col>
+                    <Col xs={12} md={6}>
+                      <StarCard
+                        title="稳定性"
+                        stars={stars.stability}
+                        hint="取胜率与夏普比率的平均。胜率 ≥60% + 夏普 ≥1.5 可得满星。"
+                      />
+                    </Col>
+                    <Col xs={12} md={6}>
+                      <StarCard
+                        title="交易频率"
+                        stars={stars.trade_frequency}
+                        hint="月均 2-5 次五星(节奏舒服);太高(>15)或太低(<0.5)都扣分。"
+                      />
+                    </Col>
+                  </>
+                );
+              })()}
+            </Row>
+          </Card>
 
           {/* 快捷入口：将买入条件同步到选股页，在当前截面快速看哪些股票满足条件 */}
           <div style={{ textAlign: "right" }}>

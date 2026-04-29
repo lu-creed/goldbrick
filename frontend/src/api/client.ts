@@ -1419,6 +1419,68 @@ export async function deleteStrategy(id: number): Promise<void> {
 }
 
 
+// ── 策略广场(Phase 2)──────────────────────────────────
+// 12 个系统预置策略的卡片数据,含人话描述 + 预跑回测快照。
+
+export interface GalleryPreview {
+  window: string;
+  total_return_pct: number;
+  max_drawdown_pct: number;
+  total_trades: number;
+  win_rate: number;
+}
+
+export interface StrategyGalleryCard {
+  strategy_id: number | null;
+  code: string;
+  display_name: string;
+  description: string;
+  category: "逆势" | "趋势" | "突破" | "价值";
+  one_liner: string;
+  long_description: string;
+  good_for: string[];
+  bad_for: string[];
+  preview: GalleryPreview;
+}
+
+export async function fetchStrategyGallery(): Promise<StrategyGalleryCard[]> {
+  const { data } = await api.get<StrategyGalleryCard[]>("/strategies/gallery");
+  return data;
+}
+
+
+// ── 指标人话百科(Phase 1)────────────────────────────
+// 给每个内置指标补充「这个指标能帮我看出什么」的人话描述。
+
+export interface TypicalSignal {
+  condition: string;
+  meaning: string;
+  caveat?: string | null;
+}
+
+export interface IndicatorPedia {
+  code: string;
+  display_name: string;
+  one_liner: string;
+  long_description: string;
+  typical_signals: TypicalSignal[];
+  good_for: string[];
+  bad_for: string[];
+  common_pairs: string[];
+  sub_notes: Record<string, string>;
+}
+
+export async function fetchIndicatorPedia(code: string): Promise<IndicatorPedia> {
+  const { data } = await api.get<IndicatorPedia>(`/indicators/pedia/${code}`);
+  return data;
+}
+
+export async function fetchAllIndicatorPedia(): Promise<IndicatorPedia[]> {
+  const { data } = await api.get<IndicatorPedia[]>("/indicators/pedia");
+  return data;
+}
+
+
 // ── 参数敏感性扫描（异步任务 + 轮询）────────────────────────────
 // POST 启动 → 得 task_id → 每 1.5 秒 GET 查进度 → status=done 时读 result。
 

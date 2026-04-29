@@ -50,6 +50,8 @@ import {
   type TradeChartOut,
 } from "../api/client";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
+import StarCard from "../components/StarCard";
+import { computeStars, generateNarrative } from "../utils/backtestNarrative";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 const { Title, Text, Paragraph } = Typography;
@@ -567,6 +569,34 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
               {typeof result.slippage_bps === "number" && <Tag>滑点 {result.slippage_bps}bp</Tag>}
               {typeof result.lot_size === "number" && <Tag>整手 {result.lot_size} 股</Tag>}
             </Space>
+
+            {/* 人话总结 + 四维星级(Phase 1:易用性迭代) */}
+            <Card title={<Space>📊 <span>本次回测总结</span></Space>} size="small" styles={{ body: { paddingTop: 12 } }}>
+              <Typography.Paragraph style={{ whiteSpace: "pre-line", marginBottom: 16 }}>
+                {generateNarrative(result)}
+              </Typography.Paragraph>
+              <Row gutter={[12, 12]}>
+                {(() => {
+                  const stars = computeStars(result);
+                  return (
+                    <>
+                      <Col xs={12} md={6}>
+                        <StarCard title="收益性" stars={stars.profitability} hint="跑赢基准 20+ 百分点得 5 星,无基准时按绝对收益打分" />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <StarCard title="风险控制" stars={stars.risk_control} hint="主要看最大回撤,越小星越多" />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <StarCard title="稳定性" stars={stars.stability} hint="胜率 + 夏普比率综合评分" />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <StarCard title="交易频率" stars={stars.trade_frequency} hint="月均 2-5 次为最佳,过多或过少都扣分" />
+                      </Col>
+                    </>
+                  );
+                })()}
+              </Row>
+            </Card>
 
             {/* 基准对比与成本（老记录无基准则隐藏该行）*/}
             {(result.benchmark_return_pct != null || result.alpha_pct != null || result.commission_cost_total) ? (
