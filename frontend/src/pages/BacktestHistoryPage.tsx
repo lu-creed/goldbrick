@@ -541,9 +541,15 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
         ) : result ? (
           <Space direction="vertical" size="large" style={{ width: "100%" }}>
 
-            {/* 口径与成本模型说明行（0.0.4-dev，老记录缺字段时跳过）*/}
+            {/* 口径与成本模型说明行（0.0.4-dev，老记录缺字段时跳过）
+                作为「可信度徽章条」：展示本次回测实际应用的全部参数与规则，
+                让用户查看历史记录时也能明确该次回测的口径与成本假设。 */}
             <Space size={6} wrap>
               <Tag color="blue">{result.adj_mode === "qfq" ? "前复权口径" : result.adj_mode || "未知口径"}</Tag>
+              <Tag color="purple">A 股 T+1</Tag>
+              <Tooltip title="主板 ±10% · 创业板 / 科创板 ±20% · 北交所 ±30% · ST ±5%；新股上市无涨跌幅窗口内不计入连板。">
+                <Tag color="magenta" style={{ cursor: "help" }}>涨跌停板块分档 ⓘ</Tag>
+              </Tooltip>
               {result.execution_price && (
                 <Tag color="cyan">
                   成交价：{result.execution_price === "next_open" ? "次日开盘" : "收盘价"}

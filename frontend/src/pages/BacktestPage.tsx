@@ -1826,9 +1826,16 @@ export default function BacktestPage() {
       {/* 结果区 */}
       {result && (        <Space direction="vertical" size="large" style={{ width: "100%" }}>
 
-          {/* 口径与成本模型说明行（0.0.4-dev）*/}
+          {/* 口径与成本模型说明行（0.0.4-dev）
+              作为「可信度徽章条」：把本次回测实际应用的全部参数与规则一字排开，
+              让用户一眼看出系统把该考虑的都考虑了 —— A 股 T+1、板块分档涨跌停、
+              前复权口径、各项交易成本等。这是量化工具建立信任的关键一层。 */}
           <Space size={6} wrap>
             <Tag color="blue">前复权口径</Tag>
+            <Tag color="purple">A 股 T+1</Tag>
+            <Tooltip title="主板 ±10% · 创业板 / 科创板 ±20% · 北交所 ±30% · ST ±5%；新股上市无涨跌幅窗口内不计入连板。">
+              <Tag color="magenta" style={{ cursor: "help" }}>涨跌停板块分档 ⓘ</Tag>
+            </Tooltip>
             <Tag color="cyan">
               成交价：{result.execution_price === "next_open" ? "次日开盘" : "收盘价"}
             </Tag>

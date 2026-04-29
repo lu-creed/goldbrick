@@ -143,16 +143,10 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
   }
 
   // 构建菜单 items（桌面 Menu 和移动 Drawer 共用同一份）
+  // 菜单顺序反映使用频率：日常看盘（数据看板）→ 选股 → 回测 → 最后才是系统运维。
+  // 数据同步 / 数据池 / 同步日志 等运维页面对大多数用户是二级功能,
+  // 合并进「系统管理」分组并放到菜单末尾,让主路径更聚焦业务场景。
   const menuItems = [
-    ...(currentUser.is_admin ? [{
-      key: "g-backend",
-      label: "数据后台",
-      children: [
-        { key: "m-data-sync", label: <Link to="/sync" onClick={() => setNavDrawerOpen(false)}>数据同步</Link> },
-        { key: "m-data-pool", label: <Link to="/data-center" onClick={() => setNavDrawerOpen(false)}>数据池</Link> },
-        { key: "m-sync-logs", label: <Link to="/sync/logs" onClick={() => setNavDrawerOpen(false)}>同步日志</Link> },
-      ],
-    }] : []),
     {
       key: "g-dashboard",
       label: "数据看板",
@@ -184,6 +178,9 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
       key: "g-admin",
       label: "系统管理",
       children: [
+        { key: "m-data-sync", label: <Link to="/sync" onClick={() => setNavDrawerOpen(false)}>数据同步</Link> },
+        { key: "m-data-pool", label: <Link to="/data-center" onClick={() => setNavDrawerOpen(false)}>数据池</Link> },
+        { key: "m-sync-logs", label: <Link to="/sync/logs" onClick={() => setNavDrawerOpen(false)}>同步日志</Link> },
         { key: "m-user-mgmt", label: <Link to="/admin/users" onClick={() => setNavDrawerOpen(false)}>用户管理</Link> },
         { key: "m-auto-update", label: <Link to="/admin/auto-update" onClick={() => setNavDrawerOpen(false)}>自动更新</Link> },
       ],
@@ -305,7 +302,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
         <Menu
           mode="inline"
           selectedKeys={selected}
-          defaultOpenKeys={["g-dashboard", "g-screen", "g-backtest", "g-backend", "g-admin"]}
+          defaultOpenKeys={["g-dashboard", "g-screen", "g-backtest", "g-admin"]}
           style={{ border: "none", height: "100%" }}
           items={menuItems}
         />
