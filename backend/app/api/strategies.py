@@ -35,10 +35,12 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.models import BarDaily, Strategy, Symbol, UserIndicator
 from app.schemas import (
+    GalleryPreview,
     StrategyCreate,
     StrategyDryRunIn,
     StrategyDryRunLogicResult,
     StrategyDryRunOut,
+    StrategyGalleryCard,
     StrategyListItem,
     StrategyLogic,
     StrategyOut,
@@ -46,6 +48,7 @@ from app.schemas import (
 )
 from app.services.combiner import validate_combiner
 from app.services.strategy_engine import compile_strategy, dry_run_on_bars
+from app.services.strategy_seed import list_presets
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/strategies", tags=["strategies"])
@@ -137,6 +140,44 @@ def _dump_logic(logic: Optional[StrategyLogic]) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────
 # 路由
 # ─────────────────────────────────────────────────────────────
+
+@router.get("/gallery", response_model=List[StrategyGalleryCard])
+def get_strategy_gallery(_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """策略广场:返回 12 个预置策略的卡片数据(含人话描述 + 预跑回测快照)。
+
+    元数据(category/one_liner/good_for/preview)来自 strategy_seed.py 的声明,不落库;
+    但 strategy_id 来自 strategies 表(需 ensure_default_strategies 启动钩子已跑过)。
+    """
+    # 查所有系统预置策略(user_id IS NULL),按 code 映射
+    system_rows = (
+        db.query(Strategy.code, Strategy.id)
+        .filter(Strategy.user_id.is_(None))
+        .all()
+    )
+    code_to_id = {row.code: row.id for row in system_rows}
+
+    out: List[StrategyGalleryCard] = []
+    for p in list_presets():
+        out.append(StrategyGalleryCard(
+            strategy_id=code_to_id.get(p.code),  # 可能为 None(预置指标缺失时 seed 跳过)
+            code=p.code,
+            display_name=p.display_name,
+            description=p.description,
+            category=p.category,
+            one_liner=p.one_liner,
+            long_description=p.long_description,
+            good_for=p.good_for,
+            bad_for=p.bad_for,
+            preview=GalleryPreview(
+                window=p.preview_window,
+                total_return_pct=p.preview_total_return_pct,
+                max_drawdown_pct=p.preview_max_drawdown_pct,
+                total_trades=p.preview_total_trades,
+                win_rate=p.preview_win_rate,
+            ),
+        ))
+    return out
+
 
 @router.get("", response_model=List[StrategyListItem])
 def list_strategies(

@@ -96,6 +96,9 @@ async def lifespan(app: FastAPI):
         seed_indicators(db)
         # 6. 写入预置自定义指标（策略模板对应的指标，必须在 seed_indicators 之后执行）
         ensure_default_user_indicators(db)
+        # 6b. 写入系统预置策略(策略广场的 12 个预置,必须在 ensure_default_user_indicators 之后)
+        from app.services.strategy_seed import ensure_default_strategies
+        ensure_default_strategies(db)
         # 7. 确保至少有一个管理员账号
         ensure_default_admin_user(db)
     finally:

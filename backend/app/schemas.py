@@ -1034,6 +1034,33 @@ class StrategyListItem(BaseModel):
     updated_at: datetime
 
 
+# ── 策略广场(Phase 2:产品易用性迭代)─────────────────────
+# 与 Strategy 模型解耦:gallery 元数据(one_liner/good_for/preview 等)只存在
+# strategy_seed.py 的 PresetStrategy 声明里,不落库。gallery API 直接返回这些
+# 元数据 + 对应 Strategy 行的 id,前端点「用这个策略」后走 /strategies/{id} 拉完整 logic。
+
+class GalleryPreview(BaseModel):
+    window: str
+    total_return_pct: float
+    max_drawdown_pct: float
+    total_trades: int
+    win_rate: float
+
+
+class StrategyGalleryCard(BaseModel):
+    """广场上的一张策略卡片。strategy_id 可能为 None(预置指标未就绪时种子跳过了),此时卡片仍可展示但不能点「用这个策略」。"""
+    strategy_id: Optional[int] = None
+    code: str
+    display_name: str
+    description: str
+    category: Literal["逆势", "趋势", "突破", "价值"]
+    one_liner: str
+    long_description: str
+    good_for: list[str]
+    bad_for: list[str]
+    preview: GalleryPreview
+
+
 class StrategyDryRunIn(BaseModel):
     """策略试算请求体。
 
