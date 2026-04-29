@@ -1343,3 +1343,130 @@ export async function triggerAutoUpdateNow(): Promise<{ ok: boolean; message: st
   const { data } = await api.post<{ ok: boolean; message: string }>("/admin/auto-update/trigger");
   return data;
 }
+
+
+// ── 策略持久化 CRUD（0.0.4-dev 产品力迭代）──────────────────────
+// 后端 /api/strategies 接口支持保存用户的多条件策略（选股 / 回测各一套），
+// 新增 notes 字段用于 Markdown 格式的研究笔记。
+
+export interface StrategyItem {
+  id: number;
+  code: string;
+  display_name: string;
+  description?: string | null;
+  notes?: string | null;                         // Markdown 研究笔记,系统预置为 null
+  kind: "screen" | "backtest";
+  logic?: StrategyLogic | null;                  // kind="screen" 时有值
+  buy_logic?: StrategyLogic | null;              // kind="backtest" 时有值
+  sell_logic?: StrategyLogic | null;             // kind="backtest" 时有值
+  is_system: boolean;                            // 系统预置不可改不可删
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StrategyListItemShort {
+  id: number;
+  code: string;
+  display_name: string;
+  description?: string | null;
+  kind: "screen" | "backtest";
+  is_system: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchStrategies(kind?: "screen" | "backtest"): Promise<StrategyListItemShort[]> {
+  const { data } = await api.get<StrategyListItemShort[]>("/strategies", { params: { kind } });
+  return data;
+}
+
+export async function getStrategy(id: number): Promise<StrategyItem> {
+  const { data } = await api.get<StrategyItem>(`/strategies/${id}`);
+  return data;
+}
+
+export async function createStrategy(body: {
+  code: string;
+  display_name: string;
+  description?: string;
+  notes?: string;
+  kind: "screen" | "backtest";
+  logic?: StrategyLogic;
+  buy_logic?: StrategyLogic;
+  sell_logic?: StrategyLogic;
+}): Promise<StrategyItem> {
+  const { data } = await api.post<StrategyItem>("/strategies", body);
+  return data;
+}
+
+export async function updateStrategy(
+  id: number,
+  body: {
+    display_name?: string;
+    description?: string;
+    notes?: string;                              // 传 "" 清空;传 undefined 保持原值
+    logic?: StrategyLogic;
+    buy_logic?: StrategyLogic;
+    sell_logic?: StrategyLogic;
+  },
+): Promise<StrategyItem> {
+  const { data } = await api.patch<StrategyItem>(`/strategies/${id}`, body);
+  return data;
+}
+
+export async function deleteStrategy(id: number): Promise<void> {
+  await api.delete(`/strategies/${id}`);
+}
+
+
+// ── 参数敏感性扫描（异步任务 + 轮询）────────────────────────────
+// POST 启动 → 得 task_id → 每 1.5 秒 GET 查进度 → status=done 时读 result。
+
+export interface SensitivityScanPoint {
+  value: number;
+  metrics: {
+    total_return_pct: number;
+    max_drawdown_pct: number;
+    total_trades: number;
+    win_rate?: number | null;
+    sharpe_ratio?: number | null;
+    annualized_return?: number | null;
+    alpha_pct?: number | null;
+    scanned_stocks: number;
+  } | null;
+  error?: string | null;
+}
+
+export interface SensitivityScanStatus {
+  task_id: string;
+  status: "running" | "done" | "failed";
+  progress: number;
+  total: number;
+  param_path: string;
+  result?: SensitivityScanPoint[] | null;
+  error?: string | null;
+}
+
+/**
+ * 启动参数敏感性扫描。
+ * @param base_params 基础回测参数(同 /api/backtest/run 的请求体字段)
+ * @param param_path 要扫描的参数路径(如 "buy_threshold" 或 "buy_logic.conditions[0].threshold")
+ * @param values 扫描点列表(2-15 个)
+ */
+export async function startSensitivityScan(
+  base_params: Record<string, unknown>,
+  param_path: string,
+  values: number[],
+): Promise<{ task_id: string; total: number }> {
+  const { data } = await api.post<{ task_id: string; total: number }>(
+    "/backtest/sensitivity",
+    { base_params, param_path, values },
+  );
+  return data;
+}
+
+export async function getSensitivityScanStatus(task_id: string): Promise<SensitivityScanStatus> {
+  const { data } = await api.get<SensitivityScanStatus>(`/backtest/sensitivity/${task_id}`);
+  return data;
+}
+

@@ -10,7 +10,7 @@
  *
  * 技术实现：ECharts 蜡烛图（candlestick） + 所有指标均前端计算
  */
-import { Alert, Button, Card, InputNumber, Radio, Select, Space, Spin, Typography, message } from "antd";
+import { Alert, Button, Card, InputNumber, Radio, Select, Space, Spin, Tag, Typography, message } from "antd";
 import * as echarts from "echarts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -896,6 +896,12 @@ export default function KlinePage() {
             <Button size="small" onClick={() => adjustDataZoom(-3, 3)}>缩小</Button>
           </Space>
         </Space>
+
+        {/* 副图口径说明小 Tag:让用户明确副图当前显示的指标 × 复权口径,
+            避免「副图数值看上去不对」其实是复权切换导致的误解 */}
+        <Tag style={{ marginBottom: 6, fontSize: 11 }}>
+          副图:{subIndicator === "CUSTOM" ? "自定义指标" : subIndicator} · {adjType === "qfq" ? "前复权" : adjType === "hfq" ? "后复权" : "不复权"}
+        </Tag>
 
         {/* ── 图表区域 ──────────────────────────────────────── */}
         <div style={{ position: "relative", minHeight: 480 }}>
