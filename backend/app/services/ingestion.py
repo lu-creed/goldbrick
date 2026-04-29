@@ -13,6 +13,7 @@ Tushare 是国内常用的股票数据接口（https://tushare.pro）。
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -25,6 +26,17 @@ from app.models import AdjFactorDaily, AppSetting, BarDaily, InstrumentMeta, Sym
 from app.services.runtime_tokens import get_tushare_token
 
 log = logging.getLogger(__name__)
+
+# 指数候选列表(fetch_remote_index_basic_rows)的进程内 TTL 缓存。
+# Tushare index_basic 单次网络往返 5-10 秒,内容天级别稳定,缓存 30 分钟完全够用。
+# 键 = (market, limit),不同组合独立缓存。
+_INDEX_CANDIDATES_CACHE: dict[tuple[str, int], tuple[float, list[dict]]] = {}
+_INDEX_CANDIDATES_TTL = 1800.0  # 30 分钟
+
+
+def invalidate_index_candidates_cache() -> None:
+    """清空指数候选列表缓存,供外部在明确知道 Tushare 端有变化时调用。"""
+    _INDEX_CANDIDATES_CACHE.clear()
 
 _TUSHARE_QUOTA_KEYWORDS = (
     # 中文：Tushare 的业务错误消息常见片段
@@ -723,6 +735,14 @@ def fetch_remote_index_basic_rows(market: str | None, limit: int) -> list[dict]:
     Returns:
         [{ts_code, name, market, publisher, list_date}, ...] 列表。
     """
+    lim = min(max(limit, 1), 8000)
+    # 先查进程内 TTL 缓存:key=(市场, limit),30 分钟内直接返回,避免每次弹窗都走 Tushare 网络
+    cache_key = (str(market or "").strip(), lim)
+    now = time.time()
+    cached = _INDEX_CANDIDATES_CACHE.get(cache_key)
+    if cached and now - cached[0] < _INDEX_CANDIDATES_TTL:
+        return cached[1]
+
     token = get_tushare_token()
     if not token:
         raise HTTPException(status_code=400, detail="TUSHARE_TOKEN 未配置")
@@ -732,7 +752,6 @@ def fetch_remote_index_basic_rows(market: str | None, limit: int) -> list[dict]:
         raise HTTPException(status_code=400, detail="未安装 tushare：请先执行 pip install tushare") from ex
 
     pro = ts.pro_api(token)
-    lim = min(max(limit, 1), 8000)
     kwargs: dict = {
         "fields": "ts_code,name,market,publisher,list_date",
     }
@@ -740,6 +759,7 @@ def fetch_remote_index_basic_rows(market: str | None, limit: int) -> list[dict]:
         kwargs["market"] = str(market).strip()
     df = pro.index_basic(**kwargs)
     if df is None or df.empty:
+        _INDEX_CANDIDATES_CACHE[cache_key] = (now, [])
         return []
     out: list[dict] = []
     for _, row in df.iterrows():
@@ -766,6 +786,7 @@ def fetch_remote_index_basic_rows(market: str | None, limit: int) -> list[dict]:
                 "list_date": ld_out,
             }
         )
+    _INDEX_CANDIDATES_CACHE[cache_key] = (now, out)
     return out
 
 

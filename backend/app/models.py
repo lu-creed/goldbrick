@@ -168,7 +168,7 @@ class InstrumentMeta(Base):
 
     ts_code: Mapped[str] = mapped_column(String(32), primary_key=True)
     name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    asset_type: Mapped[str] = mapped_column(String(16), default="stock")   # stock | index
+    asset_type: Mapped[str] = mapped_column(String(16), default="stock", index=True)   # stock | index
     list_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True) # 上市日期
     # 个股：Tushare stock_basic 的 market（主板/创业板/科创板等）、exchange（SSE/SZSE/BSE）
     market: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

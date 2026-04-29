@@ -82,6 +82,8 @@ export default function DataCenterPage() {
   const [lastSyncDate, setLastSyncDate] = useState<Dayjs | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(12);
+  // 首屏只加载 500 条(快速首屏体验);用户点「显示全部」后才拉全量 5000,避免一进来就卡住
+  const [showAllRows, setShowAllRows] = useState(false);
 
   const [indexModalOpen, setIndexModalOpen] = useState(false);
   const [indexLoading, setIndexLoading] = useState(false);
@@ -105,7 +107,8 @@ export default function DataCenterPage() {
   const refresh = async () => {
     setLoading(true);
     try {
-      const data = await fetchDataCenter(5000);
+      // 首屏 500 条即可覆盖常见浏览需求;用户主动点「显示全部」后才拉 5000 条全量
+      const data = await fetchDataCenter(showAllRows ? 5000 : 500);
       setRows(data);
     } catch (e) {
       message.error(getApiErrorMessage(e));
@@ -116,7 +119,7 @@ export default function DataCenterPage() {
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [showAllRows]);
 
   useEffect(() => {
     if (tabParam === "index") setActiveTab("index");
@@ -508,6 +511,13 @@ export default function DataCenterPage() {
           </Button>
           <Button onClick={() => setSelectedRowKeys([])} disabled={!selectedRowKeys.length}>
             清空勾选
+          </Button>
+          <Button
+            onClick={() => setShowAllRows((v) => !v)}
+            loading={loading && showAllRows}
+            title={showAllRows ? "切回首屏 500 条快速视图" : "加载全市场 5000 只标的(较慢,首次 2-4 秒)"}
+          >
+            {showAllRows ? "仅显示前 500 条" : "显示全部标的"}
           </Button>
           <Button type="primary" loading={batchSyncing} onClick={() => void syncBatch()}>
             批量同步已勾选（{selectedRowKeys.length}）
