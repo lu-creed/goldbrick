@@ -47,7 +47,19 @@ _IPO_WINDOW_NATURAL_DAYS = 15
 
 def _max_bar_date(db: Session) -> Optional[date]:
     r = db.execute(text("SELECT MAX(trade_date) AS mx FROM bars_daily")).scalar()
-    return r
+    return _coerce_date(r)
+
+
+def _coerce_date(v: Any) -> Optional[date]:
+    """SQLite 驱动偶尔把 DATE 列读成字符串，这里统一转成 date（无法解析时返回 None）。"""
+    if v is None:
+        return None
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v))
+    except ValueError:
+        return None
 
 
 def _distribution_bucket(p_pct: float) -> str:
@@ -78,7 +90,9 @@ def _days_since_ipo_trade(
     仅在新股窗口（自然日 ≤ 15）内精确查询；其他情况返回 None 代表「远超豁免期，不必传入」。
     effective_limit_pct 在收到 None 时会退回旧逻辑（仅判上市首日）。
     """
-    if list_date is None or trade_date < list_date:
+    list_date = _coerce_date(list_date)
+    trade_date = _coerce_date(trade_date)
+    if list_date is None or trade_date is None or trade_date < list_date:
         return None
     if (trade_date - list_date).days > _IPO_WINDOW_NATURAL_DAYS:
         return None

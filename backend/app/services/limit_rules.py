@@ -32,11 +32,25 @@ def is_st_stock(name: Optional[str]) -> bool:
     return s.startswith("*ST") or s.startswith("ST")
 
 
+def _coerce_date(v: object) -> Optional[date]:
+    """SQLite 驱动偶尔把 DATE 列读成字符串，这里统一转成 date（无法解析时返回 None）。"""
+    if v is None:
+        return None
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v))
+    except ValueError:
+        return None
+
+
 def is_ipo_trade_day(list_date: Optional[date], trade_date: date) -> bool:
     """是否为上市首日（保留作向后兼容，新代码请用 days_since_ipo_trade 窗口判断）。"""
-    if list_date is None:
+    ld = _coerce_date(list_date)
+    td = _coerce_date(trade_date)
+    if ld is None or td is None:
         return False
-    return list_date == trade_date
+    return ld == td
 
 
 def ipo_no_limit_trade_days(
