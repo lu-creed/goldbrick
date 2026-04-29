@@ -200,6 +200,54 @@
 - 菜单结构:合并「数据后台」与「系统管理」为一组「系统管理」放菜单末尾,主路径更聚焦业务场景(数据看板 → 条件选股 → 股票回测 → 系统管理)。
 
 
+## 0.0.4-dev 易用性重构第一波(2026-04-29 · Phase 1 + Phase 2)
+
+用户反馈「回测功能做得完整但看不懂」。不引入 LLM 的前提下,本次迭代通过**人话层 + 场景预设**降低入门门槛,整体规划为 4 个 Phase,本次完成 Phase 1 + Phase 2。
+
+### Phase 1:人话层
+
+**内置指标人话百科**(后端字典不改 DB):
+- 新建 `backend/app/services/indicator_pedia.py`,覆盖 20 个系统预置指标(MA/KDJ/BOLL/MACD/EXPMA/RSI/ATR/WR/CCI/BIAS/ROC/PSY/VOLS/OBV/DMA/TRIX/DMI/STDDEV/ARBR/STOCK_DATA)
+- 每个指标提供:一句话描述、详细用法、典型信号(带含义和陷阱)、适合场景、不适合场景(陷阱)、常见搭配、每条子线的白话解释
+- 新端点 `GET /api/indicators/pedia`(列表)和 `GET /api/indicators/pedia/{code}`(单条)
+- 严格遵守非投资建议语气(用「可能」「常被视为」,不用「应该」「推荐」)
+
+**回测结果人话总结 + 四维星级**:
+- 新建 `frontend/src/utils/backtestNarrative.ts`:`generateNarrative()` 根据结果字段拼接人话段落(「过去 3 年共交易 47 次,总收益 +23.5%,同期基准 +8.2%,跑赢 15.3 个百分点...」),`computeStars()` 按硬阈值算四维评分
+- 新建 `frontend/src/components/StarCard.tsx`:带 hover 说明的 1-5 星小卡片
+- BacktestPage / BacktestHistoryPage 结果区徽章条下方新增「本次回测总结」卡,含人话段落 + 四维星级(收益性/风险控制/稳定性/交易频率),每颗星的阈值在 tooltip 里透明展示
+
+### Phase 2:策略广场
+
+**系统预置策略种子**:
+- 新建 `backend/app/services/strategy_seed.py`,定义 12 个预置策略覆盖 4 类风格:
+  - 逆势(RSI 超卖反弹 / KDJ 底部金叉 / BIAS 乖离回归)
+  - 趋势(均线金叉死叉 / MACD 柱反转 / TRIX 零轴突破)
+  - 突破(布林下轨反弹 / 量比放量突破 / CCI 极端反转)
+  - 价值(ROC 动量突破 / BIAS 深度超卖 / RSI 极端抄底)
+- 每个策略包含:人话一句话、2-3 段详细描述、适合/不适合场景、硬写的预跑回测快照(总收益/最大回撤/交易数/胜率)
+- `main.py` 启动钩子追加 `ensure_default_strategies(db)`,幂等 seed 到 `strategies` 表(`user_id=NULL`,所有用户可见不可改)
+
+**策略广场页面**:
+- 新端点 `GET /api/strategies/gallery`:返回 12 张卡片数据(合并 strategy_seed 的元数据 + strategies 表的 strategy_id)
+- 新页面 `frontend/src/pages/StrategyGalleryPage.tsx`:
+  - 顶部分类筛选([全部] [逆势] [趋势] [突破] [价值])
+  - 12 张卡片,每张含:分类标签、策略名、人话一句话、参考回测数据(3 列:总收益/最大回撤/交易数)、1 条最具代表的适合/不适合
+  - 两个按钮:「查看完整介绍」(弹 Modal 展示 long_description + good_for/bad_for 完整列表 + 预跑参考数据)、「用这个策略」(跳 `/backtest?preset=<id>`)
+  - 页底 Alert 明示:卡片数据是参考值,不是真实跑出的结果
+- BacktestPage 接入 `?preset=<id>` 查询参数:自动 getStrategy + handleLoadStrategy 填表,toast 提示用户确认后开始回测
+- 菜单「股票回测」分组增加「策略广场 🆕」并作为首个子项,引导新用户先走广场
+
+### 硬性设计约束(已写入长期记忆)
+
+- **交易成本配置永不能被剥夺**:本次迭代不涉及风险偏好滑块,但在未来做任何封装时,佣金率 / 印花税 / 滑点 / 最小佣金 / 整手 / 成交价模式 6 个字段必须始终保留手动入口。(具体在 Phase 5 工作台合一时落地)
+
+### 还未做(下一次会话)
+
+- **Phase 4 指标百科页**:把 IndicatorLibPage「内置指标」Tab 从表格列表升级为带示例 K 线图的卡片百科
+- **Phase 5 工作台合一**:新建 StudioPage 三栏布局(指标/条件/快速回测),替换当前 BacktestPage 作为 `/backtest` 路由主入口,保留高级配置展开区
+
+
 ## 模板（后续版本直接复制）
 
 ### Vx.y.z
