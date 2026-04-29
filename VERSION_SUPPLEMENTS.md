@@ -159,6 +159,47 @@
   - 前端展示：时间范围四档切换（近1月/近3月/近半年/近半年+）；今日快报四张卡片（情绪分带标签着色、涨停/上涨/下跌家数）；三图：情绪分趋势（visualMap 冷暖渐变 + 参考阈值虚线 70/30）、涨停/跌停双线、涨跌家数堆叠柱状图；大V解读规则说明。
 
 
+## 0.0.4-dev 产品力迭代（2026-04-29)
+
+面向「能用工具 → 专业工具」的一轮打磨,重点是信任层补完与鲁棒性工具。
+
+### 可信度徽章条扩展(避免量化用户对数据口径起疑)
+
+- **BacktestPage / BacktestHistoryPage** 结果区徽章新增:`A 股 T+1`、`涨跌停板块分档 ⓘ`(Tooltip 展开主板 10% / 创业板科创板 20% / 北交所 30% / ST 5%);与既有的「前复权口径、成交价、佣金、印花税、滑点、整手」并排成完整信任展示条。
+- **ScreeningPage** 命中结果顶部新增徽章:`前复权口径 · A 股交易日截面 · 扫描 N 命中 M · 三处口径统一 ⓘ`(明确选股 / K 线副图 / 回测三处同口径,数值可直接对比)。
+- **SentimentPage** 情绪卡片顶部新增徽章:`近 N 交易日滚动 · 数据源 AKShare · 情绪分算法 ⓘ`。
+- **KlinePage** 副图容器上方新增动态小 Tag:`副图:<指标> · <复权>`,切换主图复权时联动更新,避免「副图数值看上去不对」的误会。
+- 同时删除 README L212-213 两条已过时的「已知限制」(选股/副图复权不一致、9.8% 近似) —— 实际代码早已修复,只是文档没同步。
+
+### 参数敏感性扫描(鲁棒性检验,新特性)
+
+- **后端**:
+  - `backend/app/services/backtest_sensitivity.py` 新建:循环调用 `run_backtest()`,按 `param_path` 替换单个参数为 `values` 中每个值。支持顶层字段(`buy_threshold` 等)与多条件嵌套路径(`buy_logic.conditions[0].threshold`)。
+  - `POST /api/backtest/sensitivity` 启动异步扫描,立即返回 `task_id`;`GET /api/backtest/sensitivity/{task_id}` 轮询进度与结果。
+  - 进程内任务存储(字典 + 锁 + 1 小时 TTL),用户隔离,单点失败不整批中止。
+- **前端**:BacktestPage 结果区(资金曲线之后)新增「参数敏感性」卡片。
+  - 配置:扫描参数(买入阈值 / 卖出阈值)、扫描点数(5/7/9/11)、偏移幅度(±10%/20%/30%)。
+  - 轮询 1.5 秒一次显示实时进度,完成后绘制「参数值 × 总收益率 / 最大回撤」双轴折线图 + 详情表(每点含夏普、胜率、交易数)。
+  - 多条件模式暂显示提示(涉及选哪个条件的哪个阈值,下版迭代)。
+
+### 策略持久化 UI + Markdown 研究笔记
+
+- **后端**:
+  - `Strategy` 模型新增 `notes: Text | None` 字段(Alembic 迁移 `3c7d82f1a9b4_strategy_notes`)。
+  - `StrategyCreate` / `StrategyPatch` / `StrategyOut` 全部支持 notes;系统预置策略 notes 永远为 None。
+- **前端**(后端 `/api/strategies` CRUD 原已就绪,本版首次接入 UI):
+  - `frontend/src/api/client.ts` 新增 `fetchStrategies` / `getStrategy` / `createStrategy` / `updateStrategy` / `deleteStrategy`。
+  - 新建共用组件 `frontend/src/components/StrategyDrawer.tsx`:左侧策略列表 + 右侧详情(策略逻辑只读展示 + Markdown 笔记编辑器,Segmented 切编辑/预览/并排)。使用 `react-markdown` + `remark-gfm` 渲染 GFM(表格、任务列表、删除线)。
+  - `BacktestPage` 和 `ScreeningPage` 表单区新增「保存为策略」「我的策略」两按钮。
+  - 「保存为策略」弹窗收集 code / display_name / description / 初始 notes,一键保存。
+  - 「我的策略」抽屉支持加载到当前表单:单条件策略填到单条件模式 form,多条件策略自动切到多条件模式并填 Form.List。
+
+### 其它
+
+- `frontend/package.json` 新增依赖:`react-markdown ^9.1`、`remark-gfm ^4.0`。
+- 菜单结构:合并「数据后台」与「系统管理」为一组「系统管理」放菜单末尾,主路径更聚焦业务场景(数据看板 → 条件选股 → 股票回测 → 系统管理)。
+
+
 ## 模板（后续版本直接复制）
 
 ### Vx.y.z
