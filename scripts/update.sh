@@ -51,6 +51,22 @@ export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.nvm/versions/node/current/bin:$
         echo "> requirements.txt 无变更，跳过 pip install"
     fi
 
+    # 应用数据库迁移（Alembic）
+    # 放在 pm2 restart 之前：旧 backend 仍在跑时先把 schema 升上去，
+    # 这样新 backend 重启时看到的就是最新 schema，避免启动瞬间的读旧表风险。
+    # 失败不退出脚本（|| true）——迁移脚本本身兼容「未 stamp 的老库」，
+    # 但万一个别部署状态特殊，至少让 pm2 restart 还能跑完让服务先回来，
+    # 运维再查日志补跑 alembic upgrade head。
+    if [ -d ".venv" ]; then
+        echo "> alembic upgrade head"
+        # shellcheck disable=SC1091
+        source .venv/bin/activate
+        alembic upgrade head || echo "⚠️  alembic upgrade 失败，请手动查看日志后补跑 alembic upgrade head"
+        deactivate
+    else
+        echo "> 未找到 .venv，跳过 alembic upgrade（需手动执行）"
+    fi
+
     echo "> pm2 restart goldbrick-backend"
     pm2 restart goldbrick-backend
 

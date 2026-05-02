@@ -50,6 +50,8 @@ import {
   type TradeChartOut,
 } from "../api/client";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
+import StarCard from "../components/StarCard";
+import { computeStars, generateNarrative } from "../utils/backtestNarrative";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 const { Title, Text, Paragraph } = Typography;
@@ -541,9 +543,15 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
         ) : result ? (
           <Space direction="vertical" size="large" style={{ width: "100%" }}>
 
-            {/* 口径与成本模型说明行（0.0.4-dev，老记录缺字段时跳过）*/}
+            {/* 口径与成本模型说明行（0.0.4-dev，老记录缺字段时跳过）
+                作为「可信度徽章条」：展示本次回测实际应用的全部参数与规则，
+                让用户查看历史记录时也能明确该次回测的口径与成本假设。 */}
             <Space size={6} wrap>
               <Tag color="blue">{result.adj_mode === "qfq" ? "前复权口径" : result.adj_mode || "未知口径"}</Tag>
+              <Tag color="purple">A 股 T+1</Tag>
+              <Tooltip title="主板 ±10% · 创业板 / 科创板 ±20% · 北交所 ±30% · ST ±5%；新股上市无涨跌幅窗口内不计入连板。">
+                <Tag color="magenta" style={{ cursor: "help" }}>涨跌停板块分档 ⓘ</Tag>
+              </Tooltip>
               {result.execution_price && (
                 <Tag color="cyan">
                   成交价：{result.execution_price === "next_open" ? "次日开盘" : "收盘价"}
@@ -561,6 +569,34 @@ function RecordDetailDrawer({ open, onClose, record, detail, loading }: RecordDe
               {typeof result.slippage_bps === "number" && <Tag>滑点 {result.slippage_bps}bp</Tag>}
               {typeof result.lot_size === "number" && <Tag>整手 {result.lot_size} 股</Tag>}
             </Space>
+
+            {/* 人话总结 + 四维星级(Phase 1:易用性迭代) */}
+            <Card title={<Space>📊 <span>本次回测总结</span></Space>} size="small" styles={{ body: { paddingTop: 12 } }}>
+              <Typography.Paragraph style={{ whiteSpace: "pre-line", marginBottom: 16 }}>
+                {generateNarrative(result)}
+              </Typography.Paragraph>
+              <Row gutter={[12, 12]}>
+                {(() => {
+                  const stars = computeStars(result);
+                  return (
+                    <>
+                      <Col xs={12} md={6}>
+                        <StarCard title="收益性" stars={stars.profitability} hint="跑赢基准 20+ 百分点得 5 星,无基准时按绝对收益打分" />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <StarCard title="风险控制" stars={stars.risk_control} hint="主要看最大回撤,越小星越多" />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <StarCard title="稳定性" stars={stars.stability} hint="胜率 + 夏普比率综合评分" />
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <StarCard title="交易频率" stars={stars.trade_frequency} hint="月均 2-5 次为最佳,过多或过少都扣分" />
+                      </Col>
+                    </>
+                  );
+                })()}
+              </Row>
+            </Card>
 
             {/* 基准对比与成本（老记录无基准则隐藏该行）*/}
             {(result.benchmark_return_pct != null || result.alpha_pct != null || result.commission_cost_total) ? (

@@ -159,6 +159,95 @@
   - 前端展示：时间范围四档切换（近1月/近3月/近半年/近半年+）；今日快报四张卡片（情绪分带标签着色、涨停/上涨/下跌家数）；三图：情绪分趋势（visualMap 冷暖渐变 + 参考阈值虚线 70/30）、涨停/跌停双线、涨跌家数堆叠柱状图；大V解读规则说明。
 
 
+## 0.0.4-dev 产品力迭代（2026-04-29)
+
+面向「能用工具 → 专业工具」的一轮打磨,重点是信任层补完与鲁棒性工具。
+
+### 可信度徽章条扩展(避免量化用户对数据口径起疑)
+
+- **BacktestPage / BacktestHistoryPage** 结果区徽章新增:`A 股 T+1`、`涨跌停板块分档 ⓘ`(Tooltip 展开主板 10% / 创业板科创板 20% / 北交所 30% / ST 5%);与既有的「前复权口径、成交价、佣金、印花税、滑点、整手」并排成完整信任展示条。
+- **ScreeningPage** 命中结果顶部新增徽章:`前复权口径 · A 股交易日截面 · 扫描 N 命中 M · 三处口径统一 ⓘ`(明确选股 / K 线副图 / 回测三处同口径,数值可直接对比)。
+- **SentimentPage** 情绪卡片顶部新增徽章:`近 N 交易日滚动 · 数据源 AKShare · 情绪分算法 ⓘ`。
+- **KlinePage** 副图容器上方新增动态小 Tag:`副图:<指标> · <复权>`,切换主图复权时联动更新,避免「副图数值看上去不对」的误会。
+- 同时删除 README L212-213 两条已过时的「已知限制」(选股/副图复权不一致、9.8% 近似) —— 实际代码早已修复,只是文档没同步。
+
+### 参数敏感性扫描(鲁棒性检验,新特性)
+
+- **后端**:
+  - `backend/app/services/backtest_sensitivity.py` 新建:循环调用 `run_backtest()`,按 `param_path` 替换单个参数为 `values` 中每个值。支持顶层字段(`buy_threshold` 等)与多条件嵌套路径(`buy_logic.conditions[0].threshold`)。
+  - `POST /api/backtest/sensitivity` 启动异步扫描,立即返回 `task_id`;`GET /api/backtest/sensitivity/{task_id}` 轮询进度与结果。
+  - 进程内任务存储(字典 + 锁 + 1 小时 TTL),用户隔离,单点失败不整批中止。
+- **前端**:BacktestPage 结果区(资金曲线之后)新增「参数敏感性」卡片。
+  - 配置:扫描参数(买入阈值 / 卖出阈值)、扫描点数(5/7/9/11)、偏移幅度(±10%/20%/30%)。
+  - 轮询 1.5 秒一次显示实时进度,完成后绘制「参数值 × 总收益率 / 最大回撤」双轴折线图 + 详情表(每点含夏普、胜率、交易数)。
+  - 多条件模式暂显示提示(涉及选哪个条件的哪个阈值,下版迭代)。
+
+### 策略持久化 UI + Markdown 研究笔记
+
+- **后端**:
+  - `Strategy` 模型新增 `notes: Text | None` 字段(Alembic 迁移 `3c7d82f1a9b4_strategy_notes`)。
+  - `StrategyCreate` / `StrategyPatch` / `StrategyOut` 全部支持 notes;系统预置策略 notes 永远为 None。
+- **前端**(后端 `/api/strategies` CRUD 原已就绪,本版首次接入 UI):
+  - `frontend/src/api/client.ts` 新增 `fetchStrategies` / `getStrategy` / `createStrategy` / `updateStrategy` / `deleteStrategy`。
+  - 新建共用组件 `frontend/src/components/StrategyDrawer.tsx`:左侧策略列表 + 右侧详情(策略逻辑只读展示 + Markdown 笔记编辑器,Segmented 切编辑/预览/并排)。使用 `react-markdown` + `remark-gfm` 渲染 GFM(表格、任务列表、删除线)。
+  - `BacktestPage` 和 `ScreeningPage` 表单区新增「保存为策略」「我的策略」两按钮。
+  - 「保存为策略」弹窗收集 code / display_name / description / 初始 notes,一键保存。
+  - 「我的策略」抽屉支持加载到当前表单:单条件策略填到单条件模式 form,多条件策略自动切到多条件模式并填 Form.List。
+
+### 其它
+
+- `frontend/package.json` 新增依赖:`react-markdown ^9.1`、`remark-gfm ^4.0`。
+- 菜单结构:合并「数据后台」与「系统管理」为一组「系统管理」放菜单末尾,主路径更聚焦业务场景(数据看板 → 条件选股 → 股票回测 → 系统管理)。
+
+
+## 0.0.4-dev 易用性重构第一波(2026-04-29 · Phase 1 + Phase 2)
+
+用户反馈「回测功能做得完整但看不懂」。不引入 LLM 的前提下,本次迭代通过**人话层 + 场景预设**降低入门门槛,整体规划为 4 个 Phase,本次完成 Phase 1 + Phase 2。
+
+### Phase 1:人话层
+
+**内置指标人话百科**(后端字典不改 DB):
+- 新建 `backend/app/services/indicator_pedia.py`,覆盖 20 个系统预置指标(MA/KDJ/BOLL/MACD/EXPMA/RSI/ATR/WR/CCI/BIAS/ROC/PSY/VOLS/OBV/DMA/TRIX/DMI/STDDEV/ARBR/STOCK_DATA)
+- 每个指标提供:一句话描述、详细用法、典型信号(带含义和陷阱)、适合场景、不适合场景(陷阱)、常见搭配、每条子线的白话解释
+- 新端点 `GET /api/indicators/pedia`(列表)和 `GET /api/indicators/pedia/{code}`(单条)
+- 严格遵守非投资建议语气(用「可能」「常被视为」,不用「应该」「推荐」)
+
+**回测结果人话总结 + 四维星级**:
+- 新建 `frontend/src/utils/backtestNarrative.ts`:`generateNarrative()` 根据结果字段拼接人话段落(「过去 3 年共交易 47 次,总收益 +23.5%,同期基准 +8.2%,跑赢 15.3 个百分点...」),`computeStars()` 按硬阈值算四维评分
+- 新建 `frontend/src/components/StarCard.tsx`:带 hover 说明的 1-5 星小卡片
+- BacktestPage / BacktestHistoryPage 结果区徽章条下方新增「本次回测总结」卡,含人话段落 + 四维星级(收益性/风险控制/稳定性/交易频率),每颗星的阈值在 tooltip 里透明展示
+
+### Phase 2:策略广场
+
+**系统预置策略种子**:
+- 新建 `backend/app/services/strategy_seed.py`,定义 12 个预置策略覆盖 4 类风格:
+  - 逆势(RSI 超卖反弹 / KDJ 底部金叉 / BIAS 乖离回归)
+  - 趋势(均线金叉死叉 / MACD 柱反转 / TRIX 零轴突破)
+  - 突破(布林下轨反弹 / 量比放量突破 / CCI 极端反转)
+  - 价值(ROC 动量突破 / BIAS 深度超卖 / RSI 极端抄底)
+- 每个策略包含:人话一句话、2-3 段详细描述、适合/不适合场景、硬写的预跑回测快照(总收益/最大回撤/交易数/胜率)
+- `main.py` 启动钩子追加 `ensure_default_strategies(db)`,幂等 seed 到 `strategies` 表(`user_id=NULL`,所有用户可见不可改)
+
+**策略广场页面**:
+- 新端点 `GET /api/strategies/gallery`:返回 12 张卡片数据(合并 strategy_seed 的元数据 + strategies 表的 strategy_id)
+- 新页面 `frontend/src/pages/StrategyGalleryPage.tsx`:
+  - 顶部分类筛选([全部] [逆势] [趋势] [突破] [价值])
+  - 12 张卡片,每张含:分类标签、策略名、人话一句话、参考回测数据(3 列:总收益/最大回撤/交易数)、1 条最具代表的适合/不适合
+  - 两个按钮:「查看完整介绍」(弹 Modal 展示 long_description + good_for/bad_for 完整列表 + 预跑参考数据)、「用这个策略」(跳 `/backtest?preset=<id>`)
+  - 页底 Alert 明示:卡片数据是参考值,不是真实跑出的结果
+- BacktestPage 接入 `?preset=<id>` 查询参数:自动 getStrategy + handleLoadStrategy 填表,toast 提示用户确认后开始回测
+- 菜单「股票回测」分组增加「策略广场 🆕」并作为首个子项,引导新用户先走广场
+
+### 硬性设计约束(已写入长期记忆)
+
+- **交易成本配置永不能被剥夺**:本次迭代不涉及风险偏好滑块,但在未来做任何封装时,佣金率 / 印花税 / 滑点 / 最小佣金 / 整手 / 成交价模式 6 个字段必须始终保留手动入口。(具体在 Phase 5 工作台合一时落地)
+
+### 还未做(下一次会话)
+
+- **Phase 4 指标百科页**:把 IndicatorLibPage「内置指标」Tab 从表格列表升级为带示例 K 线图的卡片百科
+- **Phase 5 工作台合一**:新建 StudioPage 三栏布局(指标/条件/快速回测),替换当前 BacktestPage 作为 `/backtest` 路由主入口,保留高级配置展开区
+
+
 ## 模板（后续版本直接复制）
 
 ### Vx.y.z

@@ -336,9 +336,15 @@ def list_daily_universe(
         sort = "pct_change"  # 非法排序字段，默认按涨跌幅
     reverse = order.lower() != "asc"  # desc → reverse=True，asc → False
 
+    # 先 O(1) 查一次「当前交易日之前最近的全市场交易日」。
+    # A 股交易日全市场同步，用 MAX(trade_date) 一次取出即可。用于下面 LEFT JOIN 取昨日收盘。
+    # 注意：对极少数在 prev_d 当天停牌的股，bp.close 会为 NULL，pct_change 将为 None，
+    # 由前端显示为「—」。这比基于 5 天前数据的「假涨跌幅」更准确。
+    prev_d = db.execute(text("SELECT MAX(trade_date) FROM bars_daily WHERE trade_date < :d"), {"d": d}).scalar()
+
     # 核心 SQL：连接 bars_daily + symbols + instrument_meta，获取当日所有 A 股行情
-    # 子查询 prev_close：取该股在交易日 d 之前最近一天的收盘价，用于计算涨跌幅
-    # LEFT 中没有 prev_close 的行（新股首日/上市第一天）pct_change 将为 None
+    # LEFT JOIN bars_daily bp ON (symbol_id, prev_d) 走 uq_symbol_trade_date 唯一索引
+    # —— 每只股票一次索引 seek，彻底消除旧版关联子查询的 N+1 问题
     # LEFT JOIN fundamental_daily：加入当日 PE/PB/市值（可能为 None，同步前未拉取时）
     sql = text("""
         SELECT
@@ -353,24 +359,19 @@ def list_daily_universe(
             b.volume,
             CAST(b.amount AS REAL) AS amount,
             CAST(b.turnover_rate AS REAL) AS turnover_rate,
-            (
-                SELECT CAST(b2.close AS REAL)
-                FROM bars_daily b2
-                WHERE b2.symbol_id = b.symbol_id AND b2.trade_date < :d
-                ORDER BY b2.trade_date DESC
-                LIMIT 1
-            ) AS prev_close,
+            CAST(bp.close AS REAL) AS prev_close,
             CAST(fd.pe_ttm AS REAL) AS pe_ttm,
             CAST(fd.pb AS REAL) AS pb,
             CAST(fd.total_mv AS REAL) AS total_mv
         FROM bars_daily b
         JOIN symbols s ON s.id = b.symbol_id
         JOIN instrument_meta m ON m.ts_code = s.ts_code
+        LEFT JOIN bars_daily bp ON bp.symbol_id = b.symbol_id AND bp.trade_date = :prev_d
         LEFT JOIN fundamental_daily fd ON fd.ts_code = s.ts_code AND fd.trade_date = :d
         WHERE b.trade_date = :d
           AND m.asset_type = 'stock'
     """)
-    rows = db.execute(sql, {"d": d}).fetchall()
+    rows = db.execute(sql, {"d": d, "prev_d": prev_d}).fetchall()
 
     # 逐行组装：计算涨跌幅（prev_close 为 None 或 0 则 pct_change=None）
     items: list[dict[str, Any]] = []

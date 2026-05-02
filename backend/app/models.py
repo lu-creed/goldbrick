@@ -168,7 +168,7 @@ class InstrumentMeta(Base):
 
     ts_code: Mapped[str] = mapped_column(String(32), primary_key=True)
     name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    asset_type: Mapped[str] = mapped_column(String(16), default="stock")   # stock | index
+    asset_type: Mapped[str] = mapped_column(String(16), default="stock", index=True)   # stock | index
     list_date: Mapped[Optional[Date]] = mapped_column(Date, nullable=True) # 上市日期
     # 个股：Tushare stock_basic 的 market（主板/创业板/科创板等）、exchange（SSE/SZSE/BSE）
     market: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -478,6 +478,9 @@ class Strategy(Base):
     logic_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     buy_logic_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     sell_logic_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # 策略研究笔记（Markdown 格式）：记录用户自己对该策略的设计思路、调参观察、市场假设等。
+    # 与 description 的区别：description 是简短说明（列表展示用），notes 是可长篇 Markdown 的研究记录。
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 

@@ -14,6 +14,9 @@
 import json
 import logging
 import math
+import threading
+import time
+import uuid
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
@@ -30,12 +33,17 @@ from app.schemas import (
     BacktestRunIn,
     BacktestRunOut,
     BacktestTradeRow,
+    SensitivityPoint,
+    SensitivityScanCreateOut,
+    SensitivityScanRequest,
+    SensitivityScanStatus,
     StrategyLogic,
     TradeChartBarPoint,
     TradeChartIndicatorPoint,
     TradeChartOut,
 )
 from app.services.backtest_runner import run_backtest
+from app.services.backtest_sensitivity import run_sensitivity_scan
 from app.services.screening_runner import _WARMUP_DAYS
 from app.services.user_indicator_compute import compute_definition_series
 from app.services.user_indicator_dsl import parse_and_validate_definition
@@ -468,4 +476,138 @@ def backtest_trade_chart(
         indicator=indicator_out,
         sub_key=sub_key,
         sub_display_name=sub_display_name,
+    )
+
+
+# ---- 参数敏感性扫描(异步任务 + 轮询)----
+#
+# 为什么用进程内字典而非 DB/Redis:
+# - 敏感性扫描结果是临时分析工具输出,用户看完就关,落库反而污染数据
+# - 单进程部署场景够用;将来多进程时再换 Redis
+# - 1 小时 TTL 自动过期,避免内存泄漏
+#
+# 失败策略:单个点失败不整批中止(继续跑剩余点),但整体 status 仍为 done
+# —— 前端遍历 result 时,error 非空的点画成断点/灰色即可
+_SENSITIVITY_TASKS: dict[str, dict] = {}
+_SENSITIVITY_LOCK = threading.Lock()
+_SENSITIVITY_TTL = 3600.0  # 任务结果保留 1 小时
+
+
+def _cleanup_stale_sensitivity_tasks() -> None:
+    """清理 TTL 过期的任务记录,防止长时间运行的进程累积内存。"""
+    now = time.time()
+    with _SENSITIVITY_LOCK:
+        stale_ids = [tid for tid, t in _SENSITIVITY_TASKS.items()
+                     if now - t["created_at"] > _SENSITIVITY_TTL]
+        for tid in stale_ids:
+            _SENSITIVITY_TASKS.pop(tid, None)
+
+
+def _sensitivity_worker(task_id: str, base_params: dict, param_path: str, values: list[float]) -> None:
+    """后台线程:跑 N 次回测,边跑边更新 _SENSITIVITY_TASKS[task_id] 的 progress/result。
+
+    每次扫描点自己管理一个短 Session(避免长事务锁表);整个任务外层也用独立 Session。
+    """
+    from app.database import SessionLocal  # 本地 import 避免模块级循环依赖
+
+    def on_progress(done: int, total: int) -> None:
+        with _SENSITIVITY_LOCK:
+            t = _SENSITIVITY_TASKS.get(task_id)
+            if t is not None:
+                t["progress"] = done
+
+    db = SessionLocal()
+    try:
+        out = run_sensitivity_scan(
+            db,
+            base_params=base_params,
+            param_path=param_path,
+            values=values,
+            progress_callback=on_progress,
+        )
+        with _SENSITIVITY_LOCK:
+            t = _SENSITIVITY_TASKS.get(task_id)
+            if t is not None:
+                t["status"] = "done"
+                t["result"] = out
+    except Exception as ex:  # noqa: BLE001
+        log.exception("敏感性扫描任务 %s 整体失败", task_id)
+        with _SENSITIVITY_LOCK:
+            t = _SENSITIVITY_TASKS.get(task_id)
+            if t is not None:
+                t["status"] = "failed"
+                t["error"] = str(ex)
+    finally:
+        db.close()
+
+
+@router.post("/sensitivity", response_model=SensitivityScanCreateOut)
+def start_sensitivity_scan(
+    body: SensitivityScanRequest,
+    current_user=Depends(get_current_user),
+    _db: Session = Depends(get_db),
+):
+    """启动异步参数敏感性扫描。立即返回 task_id,客户端轮询 /sensitivity/{task_id} 查结果。
+
+    扫描 N 个点约需 N × 3-5 秒,前端建议每 1.5 秒轮询一次。
+    """
+    _cleanup_stale_sensitivity_tasks()
+
+    # 参数合法性在 pydantic 层已做(values 长度 2-15),这里不重复
+    task_id = uuid.uuid4().hex[:16]
+    with _SENSITIVITY_LOCK:
+        _SENSITIVITY_TASKS[task_id] = {
+            "user_id": current_user.id,  # 记录所属用户,查询时校验
+            "status": "running",
+            "progress": 0,
+            "total": len(body.values),
+            "param_path": body.param_path,
+            "result": None,
+            "error": None,
+            "created_at": time.time(),
+        }
+
+    # 后台线程独立 Session,不占用当前请求的连接
+    t = threading.Thread(
+        target=_sensitivity_worker,
+        args=(task_id, body.base_params, body.param_path, body.values),
+        daemon=True,
+        name=f"sensitivity-{task_id}",
+    )
+    t.start()
+
+    return SensitivityScanCreateOut(task_id=task_id, total=len(body.values))
+
+
+@router.get("/sensitivity/{task_id}", response_model=SensitivityScanStatus)
+def get_sensitivity_scan(
+    task_id: str,
+    current_user=Depends(get_current_user),
+):
+    """轮询敏感性扫描任务状态。"""
+    with _SENSITIVITY_LOCK:
+        t = _SENSITIVITY_TASKS.get(task_id)
+        if t is None:
+            raise HTTPException(status_code=404, detail="任务不存在或已过期(TTL 1 小时)")
+        # 用户隔离:不同用户的任务互不可见
+        if t["user_id"] != current_user.id:
+            raise HTTPException(status_code=403, detail="无权访问该任务")
+        # 拷贝一份快照返回,避免读写并发
+        snapshot = {
+            "status": t["status"],
+            "progress": t["progress"],
+            "total": t["total"],
+            "param_path": t["param_path"],
+            "result": t["result"],
+            "error": t["error"],
+        }
+
+    return SensitivityScanStatus(
+        task_id=task_id,
+        status=snapshot["status"],
+        progress=snapshot["progress"],
+        total=snapshot["total"],
+        param_path=snapshot["param_path"],
+        result=[SensitivityPoint(**p) for p in snapshot["result"]] if snapshot["result"] else None,
+        error=snapshot["error"],
     )

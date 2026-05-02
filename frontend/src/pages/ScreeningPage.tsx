@@ -15,7 +15,9 @@ import {
   DatePicker,
   Drawer,
   Form,
+  Input,
   InputNumber,
+  Modal,
   Popconfirm,
   Radio,
   Segmented,
@@ -25,16 +27,18 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
-import { MinusCircleOutlined, PlusOutlined, SwapOutlined } from "@ant-design/icons";
+import { FolderOpenOutlined, MinusCircleOutlined, PlusOutlined, SaveOutlined, SwapOutlined } from "@ant-design/icons";
 import { StarFilled, StarOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
+  createStrategy,
   deleteScreeningHistory,
   fetchCustomIndicators,
   fetchScreeningHistory,
@@ -45,6 +49,7 @@ import {
   addToWatchlist,
   removeFromWatchlist,
   type ConditionSpec,
+  type StrategyItem,
   type StrategyLogic,
   type WatchlistItem,
   type ScreeningHistoryDetail,
@@ -52,6 +57,7 @@ import {
   type ScreeningStockRow,
   type UserIndicatorOut,
 } from "../api/client";
+import StrategyDrawer from "../components/StrategyDrawer";
 import { FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -364,6 +370,10 @@ export default function ScreeningPage() {
   // 模式切换：单条件（沿用旧 form）/ 多条件（新的多条件 form）
   const [mode, setMode] = useState<"single" | "multi">("single");
 
+  // 策略持久化:「保存为策略」弹窗 + 「我的策略」抽屉
+  const [strategyDrawerOpen, setStrategyDrawerOpen] = useState(false);
+  const [saveStrategyOpen, setSaveStrategyOpen] = useState(false);
+
   // 从回测页跳转过来时，location.state 中携带回测条件，自动预填选股表单
   const location = useLocation();
   const navigate = useNavigate();
@@ -564,6 +574,88 @@ export default function ScreeningPage() {
 
   // ── 执行选股 ─────────────────────────────────────────────
 
+  // ── 策略持久化:选股策略 kind="screen",只有一个 logic(不像回测有 buy/sell 两份) ──
+  const handleSaveStrategy = useCallback(async (payload: {
+    code: string;
+    display_name: string;
+    description?: string;
+    notes?: string;
+  }) => {
+    try {
+      let logic: StrategyLogic;
+      if (mode === "multi") {
+        await multiForm.validateFields(["conditions"]);
+        const v = multiForm.getFieldsValue();
+        const rows = (v.conditions as MultiCondRow[]) || [];
+        if (rows.length === 0) throw new Error("请至少添加一个条件");
+        logic = buildLogicFromMultiForm(
+          rows,
+          (v.combiner_logic as "AND" | "OR") || "AND",
+          Number(v.primary_cond_idx ?? 0),
+        );
+      } else {
+        await form.validateFields(["user_indicator_id", "compare_op", "threshold"]);
+        const v = form.getFieldsValue();
+        logic = {
+          conditions: [{
+            id: 1,
+            user_indicator_id: v.user_indicator_id,
+            sub_key: v.sub_key ?? null,
+            compare_op: v.compare_op,
+            threshold: v.threshold,
+          }],
+          groups: [{ id: "G1", condition_ids: [1] }],
+          combiner: { ref: "G1" },
+          primary_condition_id: 1,
+        };
+      }
+
+      await createStrategy({
+        ...payload,
+        kind: "screen",
+        logic,
+      });
+      message.success(`已保存策略「${payload.display_name}」`);
+      setSaveStrategyOpen(false);
+    } catch (e) {
+      message.error(getApiErrorMessage(e));
+    }
+  }, [mode, form, multiForm]);
+
+  const handleLoadStrategy = useCallback((s: StrategyItem) => {
+    if (s.kind !== "screen" || !s.logic) {
+      message.warning("该策略不是选股类型,无法加载到选股页");
+      return;
+    }
+    const conds = s.logic.conditions;
+    const isSimple = conds.length === 1;
+    if (isSimple) {
+      setMode("single");
+      const c = conds[0];
+      form.setFieldsValue({
+        user_indicator_id: c.user_indicator_id,
+        sub_key: c.sub_key ?? undefined,
+        compare_op: c.compare_op,
+        threshold: c.threshold,
+      });
+      message.success("策略已加载到单条件表单");
+    } else {
+      setMode("multi");
+      const comb = s.logic.combiner as { op?: string; ref?: string };
+      multiForm.setFieldsValue({
+        conditions: conds.map((c) => ({
+          user_indicator_id: c.user_indicator_id,
+          sub_key: c.sub_key ?? undefined,
+          compare_op: c.compare_op,
+          threshold: c.threshold,
+        })),
+        combiner_logic: comb?.op === "OR" ? "OR" : "AND",
+        primary_cond_idx: Math.max(0, (s.logic.primary_condition_id ?? 1) - 1),
+      });
+      message.success("策略已加载到多条件表单,请检查后执行");
+    }
+  }, [form, multiForm]);
+
   const onRun = async () => {
     // 多条件模式：组装 logic 提交
     if (mode === "multi") {
@@ -744,15 +836,31 @@ export default function ScreeningPage() {
                     <Skeleton active paragraph={{ rows: 2 }} />
                   ) : (
                     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                      {/* 单条件 / 多条件 切换 */}
-                      <Segmented
-                        value={mode}
-                        onChange={(v) => setMode(v as "single" | "multi")}
-                        options={[
-                          { label: "单条件", value: "single" },
-                          { label: "多条件 (AND / OR)", value: "multi" },
-                        ]}
-                      />
+                      {/* 单条件 / 多条件 切换 + 策略持久化入口 */}
+                      <Space wrap>
+                        <Segmented
+                          value={mode}
+                          onChange={(v) => setMode(v as "single" | "multi")}
+                          options={[
+                            { label: "单条件", value: "single" },
+                            { label: "多条件 (AND / OR)", value: "multi" },
+                          ]}
+                        />
+                        <Button
+                          size="small"
+                          icon={<SaveOutlined />}
+                          onClick={() => setSaveStrategyOpen(true)}
+                        >
+                          保存为策略
+                        </Button>
+                        <Button
+                          size="small"
+                          icon={<FolderOpenOutlined />}
+                          onClick={() => setStrategyDrawerOpen(true)}
+                        >
+                          我的策略
+                        </Button>
+                      </Space>
 
                       {mode === "single" ? (
                         <Form
@@ -895,6 +1003,15 @@ export default function ScreeningPage() {
                     }
                   >
                     {result.note ? <Typography.Text type="warning">{result.note}</Typography.Text> : null}
+                    {/* 可信度徽章条:明示本次选股的口径与统计,便于与回测/K 线副图对齐验证 */}
+                    <Space size={6} wrap style={{ marginBottom: 12 }}>
+                      <Tag color="blue">{result.adj_mode === "qfq" ? "前复权口径" : (result.adj_mode || "未复权口径")}</Tag>
+                      <Tag color="purple">A 股交易日截面</Tag>
+                      <Tag color="cyan">扫描 {result.scanned} 只 · 命中 {result.matched} 只</Tag>
+                      <Tooltip title="同一指标在条件选股 / K 线副图 / 股票回测三处数值完全一致,可直接互相对比验证。">
+                        <Tag color="magenta" style={{ cursor: "help" }}>三处口径统一 ⓘ</Tag>
+                      </Tooltip>
+                    </Space>
                     <StockTable
                       items={result.items}
                       watchlistProps={{ watchedSet, onToggle: handleWatchToggle }}
@@ -999,6 +1116,98 @@ export default function ScreeningPage() {
           </Space>
         ) : null}
       </Drawer>
+
+      {/* 策略管理抽屉(列表 + 详情 + Markdown 笔记) */}
+      <StrategyDrawer
+        open={strategyDrawerOpen}
+        onClose={() => setStrategyDrawerOpen(false)}
+        kind="screen"
+        onLoad={handleLoadStrategy}
+      />
+
+      {/* 保存为策略的弹窗 */}
+      <SaveStrategyScreeningModal
+        open={saveStrategyOpen}
+        onCancel={() => setSaveStrategyOpen(false)}
+        onSubmit={handleSaveStrategy}
+      />
     </Space>
+  );
+}
+
+
+// ── SaveStrategyScreeningModal:保存当前选股条件为策略 ────────────
+// 独立组件,只负责收集字段并调父回调。和 BacktestPage 里的 SaveStrategyModal 一致,
+// 但放在本文件以避免跨页组件耦合(两页各自维护,便于独立演化)。
+
+interface SaveStrategyScreeningModalProps {
+  open: boolean;
+  onCancel: () => void;
+  onSubmit: (payload: { code: string; display_name: string; description?: string; notes?: string }) => Promise<void>;
+}
+
+function SaveStrategyScreeningModal({ open, onCancel, onSubmit }: SaveStrategyScreeningModalProps) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (open) form.resetFields();
+  }, [open, form]);
+
+  const handleOk = async () => {
+    try {
+      const v = await form.validateFields();
+      setSaving(true);
+      await onSubmit({
+        code: v.code.trim(),
+        display_name: v.display_name.trim(),
+        description: v.description?.trim() || undefined,
+        notes: v.notes?.trim() || undefined,
+      });
+    } catch {
+      // 校验失败由 Form rules 自行展示
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      title="保存为选股策略"
+      okText="保存"
+      cancelText="取消"
+      onOk={handleOk}
+      onCancel={onCancel}
+      confirmLoading={saving}
+      destroyOnClose
+    >
+      <Form form={form} layout="vertical" preserve={false}>
+        <Form.Item
+          name="code"
+          label="英文标识"
+          tooltip="创建后不可修改,如 'rsi_screening_v1'。同一用户下唯一。"
+          rules={[
+            { required: true, message: "请填写英文标识" },
+            { pattern: /^[a-zA-Z0-9_-]{1,64}$/, message: "只能包含字母数字下划线和短横线" },
+          ]}
+        >
+          <Input placeholder="例:rsi_screening_v1" />
+        </Form.Item>
+        <Form.Item
+          name="display_name"
+          label="策略名称"
+          rules={[{ required: true, message: "请填写策略名称" }, { max: 128 }]}
+        >
+          <Input placeholder="例:RSI 超卖选股 v1" />
+        </Form.Item>
+        <Form.Item name="description" label="简短说明(可选)">
+          <Input.TextArea rows={2} placeholder="一句话描述筛选目的,列表页会展示" />
+        </Form.Item>
+        <Form.Item name="notes" label="研究笔记(可选, Markdown)">
+          <Input.TextArea rows={5} placeholder="# 思路\n- 阈值选择依据\n- 观察到的行情规律" />
+        </Form.Item>
+      </Form>
+    </Modal>
   );
 }

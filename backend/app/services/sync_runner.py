@@ -193,6 +193,21 @@ def _commit_run_finish(
             job.last_status = "success"
             job.last_error = None
     db.commit()
+    # 同步完成（无论成功/取消）都清空 /data-center 聚合缓存，
+    # 让用户刷新数据后台时立即看到新的 bar_count / adj_factor_count。
+    _invalidate_data_center_cache_safe()
+
+
+def _invalidate_data_center_cache_safe() -> None:
+    """同步完成后尝试清空 /data-center 聚合缓存。
+    放在本地 import 里，避免与 app.api.sync 互相 import 的循环依赖问题。
+    静默失败：缓存失效失败不应阻塞同步收口。
+    """
+    try:
+        from app.api.sync import invalidate_data_center_cache
+        invalidate_data_center_cache()
+    except Exception:
+        pass
 
 
 def _sync_fundamentals_after_run(db, fp, *, synced_codes: Optional[list[str]]) -> None:

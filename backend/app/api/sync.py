@@ -36,6 +36,7 @@
 """
 
 from __future__ import annotations
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
@@ -78,6 +79,18 @@ from app.services.ingestion import (
 from app.services.sync_runner import enqueue_full_sync, enqueue_symbol_list_sync, run_full_sync
 
 router = APIRouter(prefix="/sync", tags=["sync"])
+
+
+# /data-center 聚合要扫整张 bars_daily 大表，几十万行全量 GROUP BY 在 SQLite 下动辄 2-5 秒。
+# 这份统计不需要秒级实时（K 线条数分钟级也不会有明显变化），加一层进程内 TTL 缓存。
+# 缓存键包含 limit 参数，不同 limit 互不干扰；失效通过 invalidate_data_center_cache() 在同步完成后调用。
+_DATA_CENTER_CACHE: dict[str, tuple[float, list]] = {}
+_DATA_CENTER_TTL = 60.0  # 秒
+
+
+def invalidate_data_center_cache() -> None:
+    """清空 /data-center 聚合缓存。由 sync_runner 在每次同步完成后调用，避免用户刚同步完看到旧值。"""
+    _DATA_CENTER_CACHE.clear()
 
 
 @router.get("/job", response_model=SyncJobOut)
@@ -469,6 +482,12 @@ def data_center(limit: int = 500, _admin=Depends(get_current_admin), db: Session
     bootstrap_meta_from_symbols(db)
 
     lim = min(max(limit, 1), 2000)
+    cache_key = f"lim={lim}"
+    now = time.time()
+    cached = _DATA_CENTER_CACHE.get(cache_key)
+    if cached and now - cached[0] < _DATA_CENTER_TTL:
+        # 缓存命中：避免对 bars_daily / adj_factors_daily 的全表聚合
+        return cached[1]
     # 用子查询分别聚合 bars_daily / adj_factors_daily（各走 symbol_id 索引），
     # 再 JOIN 小结果集，比三表直连快数十倍（全市场 5000+ 只股时尤其明显）
     sql = text("""
@@ -525,6 +544,7 @@ def data_center(limit: int = 500, _admin=Depends(get_current_admin), db: Session
             adj_factor_coverage_ratio=coverage,
             adj_factor_synced=(bar_count > 0 and adj_count == bar_count),  # 完整同步
         ))
+    _DATA_CENTER_CACHE[cache_key] = (now, out)
     return out
 
 

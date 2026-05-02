@@ -283,6 +283,15 @@ export default function SentimentPage() {
         </Col>
       </Row>
 
+      {/* 可信度徽章条:明示数据来源、窗口与情绪分算法,让用户一眼看清这张图怎么来的 */}
+      <Space size={6} wrap style={{ marginBottom: 12 }}>
+        <Tag color="blue">近 {days} 交易日滚动</Tag>
+        <Tag color="cyan">数据源 AKShare</Tag>
+        <Tooltip title="情绪分 = f(涨跌家数比 × 涨停热度),归一化到 0-100。> 60 为偏乐观,< 40 为偏谨慎。">
+          <Tag color="magenta" style={{ cursor: "help" }}>情绪分算法 ⓘ</Tag>
+        </Tooltip>
+      </Space>
+
       {loading ? (
         <Skeleton active paragraph={{ rows: 6 }} />
       ) : (

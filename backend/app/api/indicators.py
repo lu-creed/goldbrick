@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_admin, get_current_user
 from app.database import get_db
 from app.models import Indicator
+from app.services.indicator_pedia import get_indicator_pedia, list_indicator_pedia
 from app.services.indicator_seed import seed_indicators
 
 router = APIRouter(prefix="/indicators", tags=["indicators"])
@@ -84,6 +85,33 @@ class IndicatorDetail(BaseModel):
     sub_indicators: List[SubIndicatorOut]
 
 
+# ── 指标人话百科(Phase 1:易用性迭代)───────────────────────────
+# Pedia 数据来自 services/indicator_pedia.py 的纯 Python 字典,
+# 不依赖数据库,改内容只需改字典不需要迁移。
+
+class TypicalSignalOut(BaseModel):
+    condition: str
+    meaning: str
+    caveat: Optional[str] = None
+
+
+class IndicatorPediaOut(BaseModel):
+    """指标人话百科:给前端展示用的「这个指标能帮我看出什么」。
+
+    与 IndicatorDetail 互补:IndicatorDetail 偏机器视角(参数/子线的原始数据),
+    IndicatorPediaOut 偏用户视角(怎么用、什么时候用、什么时候别用)。
+    """
+    code: str
+    display_name: str
+    one_liner: str                      # 一句话说这个指标干啥
+    long_description: str               # 1-2 段详述
+    typical_signals: List[TypicalSignalOut]  # 常见信号与含义
+    good_for: List[str]                 # 适合的场景
+    bad_for: List[str]                  # 不适合的场景(陷阱)
+    common_pairs: List[str]             # 常见搭配指标
+    sub_notes: dict[str, str]           # 每条子线的人话说明
+
+
 @router.get("", response_model=List[IndicatorListItem])
 def list_indicators(_user=Depends(get_current_user), db: Session = Depends(get_db)):
     """获取所有内置指标的列表（简要信息，不含参数和子线详情）。"""
@@ -114,6 +142,22 @@ def seed(force: bool = False, _admin=Depends(get_current_admin), db: Session = D
     seed_indicators(db, force=force)
     count = db.query(Indicator).count()
     return {"message": f"指标库初始化完成，当前共 {count} 条指标"}
+
+
+# 人话百科端点必须放在 /{indicator_id} 之前声明,否则 "/pedia/..." 会被误认为 indicator_id=pedia
+@router.get("/pedia", response_model=List[IndicatorPediaOut])
+def list_all_pedia(_user=Depends(get_current_user)):
+    """获取所有内置指标的人话百科(用于指标百科页一次性列表展示)。"""
+    return [IndicatorPediaOut(**p) for p in list_indicator_pedia()]
+
+
+@router.get("/pedia/{code}", response_model=IndicatorPediaOut)
+def get_pedia(code: str, _user=Depends(get_current_user)):
+    """获取单个指标的人话百科。code 大小写不敏感,未收录返回 404。"""
+    p = get_indicator_pedia(code)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"未收录指标 '{code}' 的人话百科")
+    return IndicatorPediaOut(**p)
 
 
 @router.get("/{indicator_id}", response_model=IndicatorDetail)

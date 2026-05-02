@@ -149,10 +149,12 @@ start_services() {
     info "启动后端服务..."
 
     pm2 delete goldbrick-backend 2>/dev/null || true
-    pm2 start "$APP_DIR/backend/.venv/bin/uvicorn" \
+    # 必须用 python 解释器启动，不能直接跑 venv 里的 uvicorn 脚本
+    # （pm2 默认会用 node 执行，Python 文件里的 "# -*- coding" 会被当成语法错误）
+    pm2 start "$APP_DIR/backend/.venv/bin/python3" \
         --name goldbrick-backend \
         --cwd "$APP_DIR/backend" \
-        -- app.main:app --host 127.0.0.1 --port $BACKEND_PORT
+        -- -m uvicorn app.main:app --host 127.0.0.1 --port $BACKEND_PORT
 
     pm2 save
     pm2 startup 2>/dev/null | tail -1 | bash 2>/dev/null || true

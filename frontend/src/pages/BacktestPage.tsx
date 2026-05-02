@@ -40,6 +40,8 @@ import {
 } from "antd";
 import {
   AppstoreOutlined,
+  FolderOpenOutlined,
+  SaveOutlined,
   InfoCircleOutlined,
   LineChartOutlined,
   MinusCircleOutlined,
@@ -54,19 +56,29 @@ import dayjs, { type Dayjs } from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
+  createStrategy,
   fetchCustomIndicators,
   fetchTradeChart,
   getApiErrorMessage,
+  getSensitivityScanStatus,
+  getStrategy,
   runBacktest,
+  startSensitivityScan,
   type BacktestRunOut,
   type BacktestTradeRow,
   type ConditionSpec,
+  type SensitivityScanPoint,
+  type SensitivityScanStatus,
+  type StrategyItem,
   type StrategyLogic,
   type TradeChartOut,
   type UserIndicatorOut,
 } from "../api/client";
+import StrategyDrawer from "../components/StrategyDrawer";
+import StarCard from "../components/StarCard";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { computeStars, generateNarrative } from "../utils/backtestNarrative";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -1036,6 +1048,14 @@ export default function BacktestPage() {
   const [templateOpen, setTemplateOpen] = useState(false);
   const [activeTemplate, setActiveTemplate] = useState<StrategyTemplate | null>(null);
 
+  // 策略持久化:「保存为策略」弹窗 + 「我的策略」抽屉
+  const [strategyDrawerOpen, setStrategyDrawerOpen] = useState(false);
+  const [saveStrategyOpen, setSaveStrategyOpen] = useState(false);
+
+  // 参数敏感性扫描状态
+  const [sensitivityTaskId, setSensitivityTaskId] = useState<string | null>(null);
+  const [sensitivityStatus, setSensitivityStatus] = useState<SensitivityScanStatus | null>(null);
+
   // 最近一次回测的参数（供 Drawer 使用）
   const [lastParams, setLastParams] = useState<{
     buy_op: string; buy_threshold: number;
@@ -1088,6 +1108,30 @@ export default function BacktestPage() {
   }, []);
 
   useEffect(() => { void loadIndicators(); }, [loadIndicators]);
+
+  // 策略广场跳转:/backtest?preset=<strategy_id> → 拉策略 → 自动填表
+  // 只消费一次,避免刷新页面重复弹提示;依赖 indicators 加载完成(filterForm 才能找到对应 user_indicator)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const presetId = params.get("preset");
+    if (!presetId || indicators.length === 0) return;
+    const id = Number(presetId);
+    if (Number.isNaN(id)) return;
+    // 清掉 URL 参数,避免刷新/返回时重复触发
+    navigate(location.pathname, { replace: true });
+    (async () => {
+      try {
+        const s = await getStrategy(id);
+        handleLoadStrategy(s);
+        message.info(`已加载广场策略「${s.display_name}」,请确认时间范围和资金后点开始回测`);
+      } catch (e) {
+        message.error(getApiErrorMessage(e));
+      }
+    })();
+    // handleLoadStrategy 依赖 form/multiForm/mode,这里故意不放 deps 以免重复触发;
+    // indicators 是关键触发条件 — 指标没加载完 form 的 user_indicator_id 没法渲染出来
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [indicators.length]);
 
   // 指标列表加载完成后，若携带了来自选股页的参数则自动填入
   useEffect(() => {
@@ -1320,6 +1364,171 @@ export default function BacktestPage() {
     },
   ];
 
+  // ── 策略持久化:保存当前配置 / 加载已保存策略 ────────────────────
+  // 保存:根据当前 mode 从对应 form 读字段,组装 backtest 类型的 Strategy(需有 buy_logic/sell_logic)
+  // 加载:根据 strategy.kind/buy_logic,填回 form。单条件只读 conditions[0];多条件完整填 Form.List
+  const handleSaveStrategy = useCallback(async (payload: {
+    code: string;
+    display_name: string;
+    description?: string;
+    notes?: string;
+  }) => {
+    try {
+      // 从当前 form 取出 buy/sell logic:无论 single 还是 multi 模式都走同一路径(组装后提交)
+      let buy_logic: StrategyLogic;
+      let sell_logic: StrategyLogic;
+      if (mode === "multi") {
+        await multiForm.validateFields();
+        const v = multiForm.getFieldsValue();
+        buy_logic = buildSideLogic(
+          v.buy_conditions ?? [],
+          v.buy_combiner_logic ?? "AND",
+          v.buy_primary_idx ?? 0,
+        );
+        sell_logic = buildSideLogic(
+          v.sell_conditions ?? [],
+          v.sell_combiner_logic ?? "AND",
+          v.sell_primary_idx ?? 0,
+        );
+      } else {
+        await form.validateFields(["user_indicator_id", "buy_op", "buy_threshold", "sell_op", "sell_threshold"]);
+        const v = form.getFieldsValue();
+        const mkLogic = (op: string, thr: number): StrategyLogic => ({
+          conditions: [{
+            id: 1,
+            user_indicator_id: v.user_indicator_id,
+            sub_key: v.sub_key ?? null,
+            compare_op: op,
+            threshold: thr,
+          }],
+          groups: [{ id: "G1", condition_ids: [1] }],
+          combiner: { ref: "G1" },
+          primary_condition_id: 1,
+        });
+        buy_logic = mkLogic(v.buy_op, v.buy_threshold);
+        sell_logic = mkLogic(v.sell_op, v.sell_threshold);
+      }
+
+      await createStrategy({
+        ...payload,
+        kind: "backtest",
+        buy_logic,
+        sell_logic,
+      });
+      message.success(`已保存策略「${payload.display_name}」`);
+      setSaveStrategyOpen(false);
+    } catch (e) {
+      message.error(getApiErrorMessage(e));
+    }
+  }, [mode, form, multiForm]);
+
+  const handleLoadStrategy = useCallback((s: StrategyItem) => {
+    if (s.kind !== "backtest" || !s.buy_logic || !s.sell_logic) {
+      message.warning("该策略不是回测类型,无法加载到回测页");
+      return;
+    }
+    // 简单策略(每侧 1 个条件)→ 填单条件表单;否则切到多条件模式填 Form.List
+    const isSimple = s.buy_logic.conditions.length === 1 && s.sell_logic.conditions.length === 1;
+    if (isSimple) {
+      setMode("single");
+      const b = s.buy_logic.conditions[0];
+      const se = s.sell_logic.conditions[0];
+      form.setFieldsValue({
+        user_indicator_id: b.user_indicator_id,
+        sub_key: b.sub_key ?? undefined,
+        buy_op: b.compare_op,
+        buy_threshold: b.threshold,
+        sell_op: se.compare_op,
+        sell_threshold: se.threshold,
+      });
+      message.success("策略已加载到单条件表单");
+    } else {
+      setMode("multi");
+      // 把 conditions 列表填入 multiForm 的 Form.List 字段
+      const toRows = (logic: StrategyLogic) => logic.conditions.map((c) => ({
+        user_indicator_id: c.user_indicator_id,
+        sub_key: c.sub_key ?? undefined,
+        compare_op: c.compare_op,
+        threshold: c.threshold,
+      }));
+      // 根据 combiner 结构推断 AND/OR(conditions.length>1 时看 op)
+      const getOp = (logic: StrategyLogic): "AND" | "OR" => {
+        const c = logic.combiner as { op?: string; ref?: string };
+        return c?.op === "OR" ? "OR" : "AND";
+      };
+      multiForm.setFieldsValue({
+        buy_conditions: toRows(s.buy_logic),
+        sell_conditions: toRows(s.sell_logic),
+        buy_combiner_logic: getOp(s.buy_logic),
+        sell_combiner_logic: getOp(s.sell_logic),
+        buy_primary_idx: Math.max(0, (s.buy_logic.primary_condition_id ?? 1) - 1),
+        sell_primary_idx: Math.max(0, (s.sell_logic.primary_condition_id ?? 1) - 1),
+      });
+      message.success("策略已加载到多条件表单,请检查并点开始回测");
+    }
+  }, [form, multiForm]);
+
+  // ── 参数敏感性扫描:启动异步任务 + 轮询 ────────────────────────
+  const startSensitivity = useCallback(async (paramPath: string, values: number[]) => {
+    try {
+      // 从 form 读当前完整参数作为 base_params(复用 onRun 里的字段组装逻辑的思路)
+      const v = form.getFieldsValue();
+      const [startD, endD] = v.date_range as [Dayjs, Dayjs];
+      const base_params: Record<string, unknown> = {
+        start_date: startD.format("YYYY-MM-DD"),
+        end_date: endD.format("YYYY-MM-DD"),
+        user_indicator_id: v.user_indicator_id,
+        sub_key: v.sub_key ?? null,
+        buy_op: v.buy_op,
+        buy_threshold: v.buy_threshold,
+        sell_op: v.sell_op,
+        sell_threshold: v.sell_threshold,
+        initial_capital: v.initial_capital ?? 100000,
+        max_positions: v.max_positions ?? 3,
+        max_scan: v.max_scan ?? 3000,
+        commission_rate: v.commission_rate ?? 0.00025,
+        commission_min: v.commission_min ?? 5,
+        stamp_duty_rate: v.stamp_duty_rate ?? 0.001,
+        slippage_bps: v.slippage_bps ?? 10,
+        lot_size: v.lot_size ?? 100,
+        execution_price: v.execution_price ?? "next_open",
+        benchmark_index: v.benchmark_index ?? "000300.SH",
+      };
+      const { task_id, total } = await startSensitivityScan(base_params, paramPath, values);
+      setSensitivityTaskId(task_id);
+      setSensitivityStatus({
+        task_id,
+        status: "running",
+        progress: 0,
+        total,
+        param_path: paramPath,
+        result: null,
+        error: null,
+      });
+    } catch (e) {
+      message.error(getApiErrorMessage(e));
+    }
+  }, [form]);
+
+  // 敏感性扫描轮询:任务创建后每 1.5 秒查一次状态,done/failed 时停止
+  useEffect(() => {
+    if (!sensitivityTaskId) return;
+    if (sensitivityStatus?.status && sensitivityStatus.status !== "running") return;
+    const timer = setInterval(async () => {
+      try {
+        const s = await getSensitivityScanStatus(sensitivityTaskId);
+        setSensitivityStatus(s);
+        if (s.status !== "running") {
+          clearInterval(timer);
+        }
+      } catch (e) {
+        clearInterval(timer);
+        message.error(getApiErrorMessage(e));
+      }
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [sensitivityTaskId, sensitivityStatus?.status]);
+
   const onRun = async () => {
     // 多条件模式：组装 buy_logic / sell_logic 提交
     if (mode === "multi") {
@@ -1457,33 +1666,50 @@ export default function BacktestPage() {
         title="回测配置"
         styles={{ body: { paddingBottom: 8 } }}
         extra={
-          activeTemplate ? (
-            <Space size={8}>
-              <Button
-                type="link"
-                size="small"
-                style={{ padding: 0, color: "#8c8c8c" }}
-                onClick={() => setActiveTemplate(null)}
-              >
-                自定义配置
-              </Button>
+          <Space size={8}>
+            {/* 策略持久化入口:保存当前配置为策略 / 打开抽屉管理已保存策略(含笔记) */}
+            <Button
+              size="small"
+              icon={<SaveOutlined />}
+              onClick={() => setSaveStrategyOpen(true)}
+            >
+              保存为策略
+            </Button>
+            <Button
+              size="small"
+              icon={<FolderOpenOutlined />}
+              onClick={() => setStrategyDrawerOpen(true)}
+            >
+              我的策略
+            </Button>
+            {activeTemplate ? (
+              <>
+                <Button
+                  type="link"
+                  size="small"
+                  style={{ padding: 0, color: "#8c8c8c" }}
+                  onClick={() => setActiveTemplate(null)}
+                >
+                  自定义配置
+                </Button>
+                <Button
+                  icon={<AppstoreOutlined />}
+                  size="small"
+                  onClick={() => setTemplateOpen(true)}
+                >
+                  更换模板
+                </Button>
+              </>
+            ) : (
               <Button
                 icon={<AppstoreOutlined />}
                 size="small"
                 onClick={() => setTemplateOpen(true)}
               >
-                更换模板
+                策略模板
               </Button>
-            </Space>
-          ) : (
-            <Button
-              icon={<AppstoreOutlined />}
-              size="small"
-              onClick={() => setTemplateOpen(true)}
-            >
-              策略模板
-            </Button>
-          )
+            )}
+          </Space>
         }
       >
         {loadingInd ? (
@@ -1826,9 +2052,16 @@ export default function BacktestPage() {
       {/* 结果区 */}
       {result && (        <Space direction="vertical" size="large" style={{ width: "100%" }}>
 
-          {/* 口径与成本模型说明行（0.0.4-dev）*/}
+          {/* 口径与成本模型说明行（0.0.4-dev）
+              作为「可信度徽章条」：把本次回测实际应用的全部参数与规则一字排开，
+              让用户一眼看出系统把该考虑的都考虑了 —— A 股 T+1、板块分档涨跌停、
+              前复权口径、各项交易成本等。这是量化工具建立信任的关键一层。 */}
           <Space size={6} wrap>
             <Tag color="blue">前复权口径</Tag>
+            <Tag color="purple">A 股 T+1</Tag>
+            <Tooltip title="主板 ±10% · 创业板 / 科创板 ±20% · 北交所 ±30% · ST ±5%；新股上市无涨跌幅窗口内不计入连板。">
+              <Tag color="magenta" style={{ cursor: "help" }}>涨跌停板块分档 ⓘ</Tag>
+            </Tooltip>
             <Tag color="cyan">
               成交价：{result.execution_price === "next_open" ? "次日开盘" : "收盘价"}
             </Tag>
@@ -1842,6 +2075,54 @@ export default function BacktestPage() {
             <Tag>滑点 {result.slippage_bps}bp</Tag>
             <Tag>整手 {result.lot_size} 股</Tag>
           </Space>
+
+          {/* 人话总结 + 四维星级(Phase 1:易用性迭代) — 让非量化用户一眼看懂回测结果 */}
+          <Card
+            title={<Space>📊 <span>本次回测总结</span></Space>}
+            size="small"
+            styles={{ body: { paddingTop: 12 } }}
+          >
+            <Typography.Paragraph style={{ whiteSpace: "pre-line", marginBottom: 16 }}>
+              {generateNarrative(result)}
+            </Typography.Paragraph>
+            <Row gutter={[12, 12]}>
+              {(() => {
+                const stars = computeStars(result);
+                return (
+                  <>
+                    <Col xs={12} md={6}>
+                      <StarCard
+                        title="收益性"
+                        stars={stars.profitability}
+                        hint="5 星:跑赢基准 20+ 百分点,或无基准时绝对收益 > 30%。规则透明,按结果硬打分。"
+                      />
+                    </Col>
+                    <Col xs={12} md={6}>
+                      <StarCard
+                        title="风险控制"
+                        stars={stars.risk_control}
+                        hint="主要看最大回撤:<8% 五星,<15% 四星,<20% 三星,<30% 二星,更大一星。"
+                      />
+                    </Col>
+                    <Col xs={12} md={6}>
+                      <StarCard
+                        title="稳定性"
+                        stars={stars.stability}
+                        hint="取胜率与夏普比率的平均。胜率 ≥60% + 夏普 ≥1.5 可得满星。"
+                      />
+                    </Col>
+                    <Col xs={12} md={6}>
+                      <StarCard
+                        title="交易频率"
+                        stars={stars.trade_frequency}
+                        hint="月均 2-5 次五星(节奏舒服);太高(>15)或太低(<0.5)都扣分。"
+                      />
+                    </Col>
+                  </>
+                );
+              })()}
+            </Row>
+          </Card>
 
           {/* 快捷入口：将买入条件同步到选股页，在当前截面快速看哪些股票满足条件 */}
           <div style={{ textAlign: "right" }}>
@@ -2112,6 +2393,16 @@ export default function BacktestPage() {
             <div ref={chartRef} style={{ width: "100%", height: isMobile ? 280 : 440 }} />
           </Card>
 
+          {/* 参数敏感性扫描:在基线回测完成后,用户可一键扫描阈值 ±N% 范围,
+              看「参数-收益」曲线判断策略鲁棒性。避免策略对单一阈值过拟合。 */}
+          <SensitivityScanCard
+            mode={mode}
+            status={sensitivityStatus}
+            onStart={startSensitivity}
+            currentBuyThreshold={form.getFieldValue("buy_threshold") as number | undefined}
+            currentSellThreshold={form.getFieldValue("sell_threshold") as number | undefined}
+          />
+
           {/* 交易记录 */}
           <Card
             title={
@@ -2158,6 +2449,275 @@ export default function BacktestPage() {
         startDate={lastParams?.start_date ?? ""}
         endDate={lastParams?.end_date ?? ""}
       />
+
+      {/* 策略管理抽屉(列表 + 详情 + Markdown 笔记) */}
+      <StrategyDrawer
+        open={strategyDrawerOpen}
+        onClose={() => setStrategyDrawerOpen(false)}
+        kind="backtest"
+        onLoad={handleLoadStrategy}
+      />
+
+      {/* 保存为策略的弹窗:用户填 code/name/description/notes 提交 */}
+      <SaveStrategyModal
+        open={saveStrategyOpen}
+        onCancel={() => setSaveStrategyOpen(false)}
+        onSubmit={handleSaveStrategy}
+      />
     </Space>
+  );
+}
+
+
+// ── SaveStrategyModal:把当前配置保存为可复用策略 ──────────────────
+// 独立小组件,只负责收集 code/name/description/notes 四个字段,点确定后交给父回调
+
+interface SaveStrategyModalProps {
+  open: boolean;
+  onCancel: () => void;
+  onSubmit: (payload: { code: string; display_name: string; description?: string; notes?: string }) => Promise<void>;
+}
+
+function SaveStrategyModal({ open, onCancel, onSubmit }: SaveStrategyModalProps) {
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    // 每次打开清空表单,避免上次残留
+    if (open) form.resetFields();
+  }, [open, form]);
+
+  const handleOk = async () => {
+    try {
+      const v = await form.validateFields();
+      setSaving(true);
+      await onSubmit({
+        code: v.code.trim(),
+        display_name: v.display_name.trim(),
+        description: v.description?.trim() || undefined,
+        notes: v.notes?.trim() || undefined,
+      });
+    } catch {
+      // validateFields 失败不弹错误框,由 Form 的 rules 自行显示
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      title="保存为策略"
+      okText="保存"
+      cancelText="取消"
+      onOk={handleOk}
+      onCancel={onCancel}
+      confirmLoading={saving}
+      destroyOnClose
+    >
+      <Form form={form} layout="vertical" preserve={false}>
+        <Form.Item
+          name="code"
+          label="英文标识"
+          tooltip="创建后不可修改,如 'my_rsi_bottom_v1'。同一用户下唯一。"
+          rules={[
+            { required: true, message: "请填写英文标识" },
+            { pattern: /^[a-zA-Z0-9_-]{1,64}$/, message: "只能包含字母数字下划线和短横线,最长 64 字符" },
+          ]}
+        >
+          <Input placeholder="例:my_rsi_bottom_v1" />
+        </Form.Item>
+        <Form.Item
+          name="display_name"
+          label="策略名称"
+          rules={[{ required: true, message: "请填写策略名称" }, { max: 128 }]}
+        >
+          <Input placeholder="例:RSI 底部反弹 v1" />
+        </Form.Item>
+        <Form.Item name="description" label="简短说明(可选)">
+          <Input.TextArea rows={2} placeholder="一句话说明这个策略做什么,列表页会展示" />
+        </Form.Item>
+        <Form.Item name="notes" label="研究笔记(可选, Markdown)">
+          <Input.TextArea rows={5} placeholder="# 思路\n- 为什么这样设计\n- 观察到哪些现象\n\n保存后可在「我的策略」里继续编辑" />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+
+// ── SensitivityScanCard:参数敏感性扫描入口 + 结果可视化 ───────────
+// 位于回测结果区(资金曲线之后),只在有 result 时才渲染,一键验证策略鲁棒性
+
+interface SensitivityScanCardProps {
+  mode: "single" | "multi";
+  status: SensitivityScanStatus | null;
+  onStart: (paramPath: string, values: number[]) => Promise<void>;
+  currentBuyThreshold?: number;
+  currentSellThreshold?: number;
+}
+
+function SensitivityScanCard({ mode, status, onStart, currentBuyThreshold, currentSellThreshold }: SensitivityScanCardProps) {
+  const [paramPath, setParamPath] = useState<string>("buy_threshold");
+  const [pointCount, setPointCount] = useState<number>(7);
+  const [offsetPct, setOffsetPct] = useState<number>(20);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const chartInst = useRef<echarts.ECharts | null>(null);
+
+  // 根据当前阈值和偏移 / 点数生成扫描点
+  const computedValues = useMemo(() => {
+    const base = paramPath === "buy_threshold" ? currentBuyThreshold
+      : paramPath === "sell_threshold" ? currentSellThreshold
+      : null;
+    if (base == null || !Number.isFinite(base)) return [] as number[];
+    // 在 [base * (1 - offset), base * (1 + offset)] 均匀取 pointCount 个点;
+    // 阈值为 0 时退化为 [-offset, +offset] 线性区间,避免都是 0
+    const span = Math.max(Math.abs(base) * (offsetPct / 100), offsetPct / 10);
+    const lo = base - span;
+    const hi = base + span;
+    const step = (hi - lo) / (pointCount - 1);
+    return Array.from({ length: pointCount }, (_, i) => Number((lo + step * i).toFixed(4)));
+  }, [paramPath, pointCount, offsetPct, currentBuyThreshold, currentSellThreshold]);
+
+  const isMultiMode = mode === "multi";
+  const running = status?.status === "running";
+  const done = status?.status === "done";
+
+  // 绘图:done 后用 ECharts 画双轴折线(收益 + 回撤)
+  useEffect(() => {
+    if (!done || !status?.result || !chartRef.current) return;
+    if (!chartInst.current) {
+      chartInst.current = echarts.init(chartRef.current);
+    }
+    const chart = chartInst.current;
+    const xs = status.result.map((p) => p.value.toFixed(2));
+    const rets = status.result.map((p) => p.metrics?.total_return_pct ?? null);
+    const dds = status.result.map((p) => p.metrics?.max_drawdown_pct ?? null);
+    chart.setOption({
+      ...ECHARTS_BASE_OPTION,
+      tooltip: { trigger: "axis" },
+      legend: { data: ["总收益率 %", "最大回撤 %"], top: 0 },
+      xAxis: { type: "category", data: xs, name: status.param_path },
+      yAxis: [
+        { type: "value", name: "收益 %", position: "left" },
+        { type: "value", name: "回撤 %", position: "right" },
+      ],
+      series: [
+        { name: "总收益率 %", type: "line", data: rets, smooth: true, itemStyle: { color: RISE_COLOR } },
+        { name: "最大回撤 %", type: "line", yAxisIndex: 1, data: dds, smooth: true, itemStyle: { color: FALL_COLOR } },
+      ],
+      grid: { top: 40, bottom: 40, left: 50, right: 50 },
+    });
+    chart.resize();
+    const resize = () => chart.resize();
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, [done, status]);
+
+  return (
+    <Card
+      title={
+        <Space>
+          <span>参数敏感性</span>
+          <Tooltip title="对同一策略在目标参数的 N 个值上分别回测,绘出「参数-收益」曲线。曲线平滑 = 策略鲁棒;曲线大起大落 = 可能对参数过拟合。">
+            <Tag color="magenta" style={{ cursor: "help" }}>鲁棒性检验 ⓘ</Tag>
+          </Tooltip>
+        </Space>
+      }
+    >
+      {isMultiMode ? (
+        <Text type="secondary">
+          多条件策略的敏感性扫描暂未开放(涉及选哪个条件的哪个阈值)。请切换到「单条件模式」后再回测并扫描。
+        </Text>
+      ) : (
+        <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          <Space wrap>
+            <Select
+              value={paramPath}
+              onChange={setParamPath}
+              style={{ width: 160 }}
+              options={[
+                { value: "buy_threshold", label: "买入阈值" },
+                { value: "sell_threshold", label: "卖出阈值" },
+              ]}
+            />
+            <Select
+              value={pointCount}
+              onChange={setPointCount}
+              style={{ width: 110 }}
+              options={[5, 7, 9, 11].map((n) => ({ value: n, label: `${n} 个点` }))}
+            />
+            <Select
+              value={offsetPct}
+              onChange={setOffsetPct}
+              style={{ width: 120 }}
+              options={[10, 20, 30].map((n) => ({ value: n, label: `±${n}%` }))}
+            />
+            <Button
+              type="primary"
+              loading={running}
+              disabled={running || computedValues.length === 0}
+              onClick={() => void onStart(paramPath, computedValues)}
+            >
+              {running ? `扫描中… ${status?.progress ?? 0}/${status?.total ?? 0}` : "开始扫描"}
+            </Button>
+            {computedValues.length > 0 && !running && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                本次将回测 {computedValues.length} 次,预计 {computedValues.length * 3}-{computedValues.length * 5} 秒
+              </Text>
+            )}
+          </Space>
+
+          {status?.status === "failed" && status.error && (
+            <Text type="danger">扫描失败:{status.error}</Text>
+          )}
+
+          {done && status?.result && (
+            <>
+              <div ref={chartRef} style={{ width: "100%", height: 320 }} />
+              <Table
+                size="small"
+                dataSource={status.result.map((p, i) => ({ ...p, key: i }))}
+                pagination={false}
+                columns={[
+                  { title: "参数值", dataIndex: "value", render: (v: number) => v.toFixed(4) },
+                  {
+                    title: "总收益 %",
+                    render: (_: unknown, p: SensitivityScanPoint) =>
+                      p.metrics ? <Text style={{ color: (p.metrics.total_return_pct ?? 0) >= 0 ? RISE_COLOR : FALL_COLOR }}>
+                        {p.metrics.total_return_pct.toFixed(2)}
+                      </Text> : <Text type="secondary">—</Text>,
+                  },
+                  {
+                    title: "最大回撤 %",
+                    render: (_: unknown, p: SensitivityScanPoint) =>
+                      p.metrics ? <Text style={{ color: FALL_COLOR }}>{p.metrics.max_drawdown_pct.toFixed(2)}</Text> : <Text type="secondary">—</Text>,
+                  },
+                  {
+                    title: "交易数",
+                    render: (_: unknown, p: SensitivityScanPoint) => p.metrics?.total_trades ?? "—",
+                  },
+                  {
+                    title: "胜率 %",
+                    render: (_: unknown, p: SensitivityScanPoint) =>
+                      p.metrics?.win_rate != null ? `${p.metrics.win_rate.toFixed(1)}` : "—",
+                  },
+                  {
+                    title: "夏普",
+                    render: (_: unknown, p: SensitivityScanPoint) =>
+                      p.metrics?.sharpe_ratio != null ? p.metrics.sharpe_ratio.toFixed(2) : "—",
+                  },
+                  {
+                    title: "状态",
+                    render: (_: unknown, p: SensitivityScanPoint) =>
+                      p.error ? <Tag color="error">失败</Tag> : <Tag color="success">完成</Tag>,
+                  },
+                ]}
+              />
+            </>
+          )}
+        </Space>
+      )}
+    </Card>
   );
 }
