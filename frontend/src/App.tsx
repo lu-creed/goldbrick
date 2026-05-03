@@ -1,20 +1,22 @@
 /**
  * 应用主框架文件
  *
- * 这个文件负责整个应用的"骨架"：
- * - 顶部导航栏（Header）：包含应用名称和菜单
- * - 内容区域（Content）：根据 URL 显示对应的页面
- * - 底部免责声明（Footer）：固定显示法律声明
- *
- * React Router 的工作原理：
- * 当用户点击菜单或浏览器地址栏变化时，<Routes> 会根据当前 URL
- * 找到匹配的 <Route>，然后渲染对应的页面组件。
+ * 重构（2026-05-04，访客/登录分层 PR 2）：
+ * - 未登录时不再跳 LoginPage，直接渲染 AppShell 进入"访客态"
+ * - 全局 <LoginGateModal> 替代硬跳 /login；由 useAuth Context 驱动
+ * - 部分路由用 <ProtectedRoute> 包（DAV/Watchlist/回测历史/所有 admin 页）
+ * - 顶栏右上角访客显示「登录」按钮，登录后显示用户下拉
+ * - 菜单不再按 is_admin 过滤，始终全展示；访客 / 非管理员点到时由 ProtectedRoute 拦截
+ * - 免责声明 key 按登录态分叉：访客 = anonymous，登录 = username
  */
-import { Checkbox, Drawer, Dropdown, Layout, Menu, Modal, Typography, theme } from "antd";
-import { DownOutlined, MenuOutlined } from "@ant-design/icons";
+import { Button, Checkbox, Drawer, Dropdown, Layout, Menu, Modal, Typography, theme } from "antd";
+import { DownOutlined, LoginOutlined, MenuOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useIsMobile } from "./hooks/useIsMobile";
+import { AuthProvider, useAuth } from "./hooks/useAuth";
+import LoginGateModal from "./components/LoginGateModal";
+import ProtectedRoute from "./components/ProtectedRoute";
 import DataCenterPage from "./pages/DataCenterPage";
 import IndicatorLibPage from "./pages/IndicatorLibPage";
 import KlinePage from "./pages/KlinePage";
@@ -29,7 +31,6 @@ import BacktestPage from "./pages/BacktestPage";
 import BacktestHistoryPage from "./pages/BacktestHistoryPage";
 import StrategyGalleryPage from "./pages/StrategyGalleryPage";
 import DavPage from "./pages/DavPage";
-import LoginPage from "./pages/LoginPage";
 import UserManagementPage from "./pages/UserManagementPage";
 import AutoUpdatePage from "./pages/AutoUpdatePage";
 import { UserInfo, fetchCurrentUser } from "./api/client";
@@ -37,19 +38,9 @@ import { UserInfo, fetchCurrentUser } from "./api/client";
 const { Header, Content, Footer } = Layout;
 const { Text } = Typography;
 
-/**
- * 根据当前 URL 路径，返回应该高亮的菜单项 key
- *
- * 为什么需要这个函数？
- * Ant Design 的 Menu 组件需要知道当前哪个菜单项是"选中状态"（高亮显示），
- * 这样用户能直观看到自己在哪个页面。这个函数把 URL 路径翻译成菜单 key。
- *
- * @param loc - 当前位置对象，包含 pathname（路径）和 hash（#后面的部分）
- * @returns 应该选中的菜单项 key 数组
- */
+/** 根据当前 URL 路径返回应该高亮的菜单项 key */
 function menuSelectedKeys(loc: { pathname: string }): string[] {
   const { pathname } = loc;
-  // /sync 页面有两个子区域，通过 hash 区分
   if (pathname === "/sync") return ["m-data-sync"];
   if (pathname === "/sync/logs") return ["m-sync-logs"];
   if (pathname === "/data-center") return ["m-data-pool"];
@@ -70,84 +61,88 @@ function menuSelectedKeys(loc: { pathname: string }): string[] {
 }
 
 /**
- * 应用根组件
- *
- * 渲染整体布局：顶部导航 + 页面内容 + 底部声明
- * 首次访问时弹出免责声明 Modal，必须勾选「已阅读」才可关闭。
+ * 应用根组件：最外层包 AuthProvider，下层所有组件可通过 useAuth() 拿到鉴权状态。
  */
 export default function App() {
-  // ── 认证状态 ────────────────────────────────────────────────
-  const [currentUser, setCurrentUser] = useState<UserInfo | null>(() => {
-    const raw = localStorage.getItem("gb_user");
-    return raw ? JSON.parse(raw) : null;
-  });
-  const [authChecking, setAuthChecking] = useState(!currentUser);
+  return (
+    <AuthProvider>
+      <AppRoot />
+    </AuthProvider>
+  );
+}
 
-  // 应用启动时用 /auth/me 验证 token 是否仍有效
+/**
+ * 首屏鉴权校验 + 挂载全局 LoginGateModal
+ */
+function AppRoot() {
+  const { setCurrentUser } = useAuth();
+  const [authChecking, setAuthChecking] = useState(
+    () => localStorage.getItem("gb_token") !== null,
+  );
+
+  // 启动时若本地有 token，用 /auth/me 校验；失败则静默清凭据进入访客态，
+  // 不再硬跳登录页（fetchCurrentUser 已带 _skipLoginGate，不会反弹 Modal）
   useEffect(() => {
     if (!localStorage.getItem("gb_token")) {
       setAuthChecking(false);
       return;
     }
     fetchCurrentUser()
-      .then((user) => {
-        setCurrentUser(user);
-        localStorage.setItem("gb_user", JSON.stringify(user));
-      })
+      .then((user) => setCurrentUser(user))
       .catch(() => {
         localStorage.removeItem("gb_token");
         localStorage.removeItem("gb_user");
         setCurrentUser(null);
       })
       .finally(() => setAuthChecking(false));
-  }, []);
+  }, [setCurrentUser]);
 
-  function handleLogout() {
-    localStorage.removeItem("gb_token");
-    localStorage.removeItem("gb_user");
-    setCurrentUser(null);
-  }
-
-  // 等待 token 验证完成前显示空白（避免闪烁）
+  // 有 token 时等 /auth/me 校验完再渲染（避免登录态从"像已登录"闪到"访客态"）
   if (authChecking) return null;
 
-  // 未登录 → 显示登录页
-  if (!currentUser) {
-    return <LoginPage onLogin={(user) => setCurrentUser(user as UserInfo)} />;
-  }
-
-  return <AppShell currentUser={currentUser} onLogout={handleLogout} />;
+  return (
+    <>
+      <AppShell />
+      <LoginGateModal />
+    </>
+  );
 }
 
-function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: () => void }) {
-  // useLocation 获取当前 URL 信息，用于确定菜单选中状态
+/**
+ * 主应用外壳：顶栏 / 菜单 / 路由 / 页脚 / 免责声明。
+ * 鉴权状态来自 useAuth()，currentUser 可能为 null（访客态）。
+ */
+function AppShell() {
   const location = useLocation();
-  // theme.useToken 获取 Ant Design 主题颜色变量，让各部分颜色跟随主题自动变化
   const { token } = theme.useToken();
-  // 计算当前应该高亮哪个菜单项
   const selected = menuSelectedKeys(location);
   const isMobile = useIsMobile();
   const [navDrawerOpen, setNavDrawerOpen] = useState(false);
+  const { currentUser, isGuest, openLoginGate, logout } = useAuth();
 
-  // ── 首次访问免责声明 Modal ─────────────────────────────────
-  // 每个用户独立记录是否已阅读（key 含用户名，避免换账号后跳过）
-  const disclaimerKey = `goldbrick_disclaimer_read_${currentUser.username}`;
+  // ── 免责声明 Modal：访客 / 登录后各一套独立 key ────────────
+  const usernameKey = currentUser?.username ?? "anonymous";
+  const disclaimerKey = `goldbrick_disclaimer_read_${usernameKey}`;
   const [disclaimerOpen, setDisclaimerOpen] = useState(
     () => localStorage.getItem(disclaimerKey) !== "1",
   );
   const [disclaimerChecked, setDisclaimerChecked] = useState(false);
   const [disclaimerViewOpen, setDisclaimerViewOpen] = useState(false);
 
-  /** 用户勾选「已阅读」并点击确认后，记录标志位并关闭弹窗 */
+  // 登录态切换（访客 → 登录 / 换账号）时重新评估 disclaimer
+  // 访客读过一次 + 登录后用户名变化 → 要求用户再确认一次（新的 key）
+  useEffect(() => {
+    const alreadyRead = localStorage.getItem(disclaimerKey) === "1";
+    setDisclaimerOpen(!alreadyRead);
+    setDisclaimerChecked(false);
+  }, [disclaimerKey]);
+
   function handleDisclaimerOk() {
     localStorage.setItem(disclaimerKey, "1");
     setDisclaimerOpen(false);
   }
 
-  // 构建菜单 items（桌面 Menu 和移动 Drawer 共用同一份）
-  // 菜单顺序反映使用频率：日常看盘（数据看板）→ 选股 → 回测 → 最后才是系统运维。
-  // 数据同步 / 数据池 / 同步日志 等运维页面对大多数用户是二级功能,
-  // 合并进「系统管理」分组并放到菜单末尾,让主路径更聚焦业务场景。
+  // ── 菜单：始终全展示（含系统管理组），访客 / 非管理员点击时由 ProtectedRoute 弹 Modal ─
   const menuItems = [
     {
       key: "g-dashboard",
@@ -177,7 +172,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
         { key: "m-backtest-records", label: <Link to="/backtest/history" onClick={() => setNavDrawerOpen(false)}>回测记录</Link> },
       ],
     },
-    ...(currentUser.is_admin ? [{
+    {
       key: "g-admin",
       label: "系统管理",
       children: [
@@ -187,11 +182,10 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
         { key: "m-user-mgmt", label: <Link to="/admin/users" onClick={() => setNavDrawerOpen(false)}>用户管理</Link> },
         { key: "m-auto-update", label: <Link to="/admin/auto-update" onClick={() => setNavDrawerOpen(false)}>自动更新</Link> },
       ],
-    }] : []),
+    },
   ];
 
   return (
-    // Layout 是整页布局容器，minHeight: "100vh" 确保页面至少占满整个屏幕高度
     <Layout style={{ minHeight: "100vh" }}>
 
       {/* ── 顶部导航栏 ──────────────────────────────────────── */}
@@ -207,12 +201,10 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
           zIndex: 100,
         }}
       >
-        {/* 应用名称 */}
         <div style={{ marginRight: isMobile ? 8 : 32, fontWeight: 700, fontSize: 16, color: token.colorPrimary, flexShrink: 0 }}>
           GoldBrick
         </div>
 
-        {/* 桌面端：水平菜单 */}
         {!isMobile && (
           <Menu
             mode="horizontal"
@@ -222,51 +214,60 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
           />
         )}
 
-        {/* 移动端：占位撑开空间 */}
         {isMobile && <div style={{ flex: 1 }} />}
 
-        {/* 当前用户下拉菜单 */}
+        {/* 右上角：访客态显示「登录」按钮；已登录显示用户下拉 */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: isMobile ? 0 : 16, flexShrink: 0 }}>
-          <Dropdown
-            menu={{
-              items: [
-                {
-                  key: "disclaimer",
-                  label: "查看免责声明",
-                  onClick: () => setDisclaimerViewOpen(true),
-                },
-                { type: "divider" },
-                {
-                  key: "logout",
-                  label: "退出登录",
-                  danger: true,
-                  onClick: onLogout,
-                },
-              ],
-            }}
-            trigger={["click"]}
-          >
-            <button
-              style={{
-                background: "none",
-                border: `1px solid ${token.colorBorderSecondary}`,
-                borderRadius: 4,
-                color: token.colorTextSecondary,
-                cursor: "pointer",
-                fontSize: 12,
-                padding: "2px 10px",
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-              }}
+          {isGuest ? (
+            <Button
+              type="primary"
+              size="small"
+              icon={<LoginOutlined />}
+              onClick={() => openLoginGate()}
             >
-              {!isMobile && `${currentUser.username}${currentUser.is_admin ? "（管理员）" : ""}`}
-              {isMobile && currentUser.username}
-              <DownOutlined style={{ fontSize: 10 }} />
-            </button>
-          </Dropdown>
+              登录
+            </Button>
+          ) : (
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: "disclaimer",
+                    label: "查看免责声明",
+                    onClick: () => setDisclaimerViewOpen(true),
+                  },
+                  { type: "divider" },
+                  {
+                    key: "logout",
+                    label: "退出登录",
+                    danger: true,
+                    onClick: logout,
+                  },
+                ],
+              }}
+              trigger={["click"]}
+            >
+              <button
+                style={{
+                  background: "none",
+                  border: `1px solid ${token.colorBorderSecondary}`,
+                  borderRadius: 4,
+                  color: token.colorTextSecondary,
+                  cursor: "pointer",
+                  fontSize: 12,
+                  padding: "2px 10px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                {!isMobile && `${currentUser!.username}${currentUser!.is_admin ? "（管理员）" : ""}`}
+                {isMobile && currentUser!.username}
+                <DownOutlined style={{ fontSize: 10 }} />
+              </button>
+            </Dropdown>
+          )}
 
-          {/* 移动端汉堡按钮 */}
           {isMobile && (
             <button
               onClick={() => setNavDrawerOpen(true)}
@@ -293,7 +294,9 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
       <Drawer
         title={
           <span style={{ fontSize: 14 }}>
-            {currentUser.username}{currentUser.is_admin ? "（管理员）" : ""}
+            {isGuest
+              ? "游客"
+              : `${currentUser!.username}${currentUser!.is_admin ? "（管理员）" : ""}`}
           </span>
         }
         placement="right"
@@ -319,49 +322,69 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
           minHeight: "calc(100vh - 64px - 56px)",
         }}
       >
-        {/*
-          page-transition class 添加路由切换淡入动画（定义在 index.css）
-          key={location.pathname} 让每次路由变化时重新触发动画
-        */}
         <div key={location.pathname} className="page-transition">
-          {/*
-            路由表：根据当前 URL 显示对应页面
-            - path="/" 匹配根路径，显示 K 线页
-            - path="*" 匹配所有未定义路径，重定向到首页
-          */}
           <Routes>
+            {/* ── 公开路由：访客直接可见 ────────────── */}
             <Route path="/" element={<KlinePage />} />
             <Route path="/replay" element={<ReplayPage />} />
-            <Route path="/watchlist" element={<WatchlistPage />} />
-            <Route path="/dav" element={<DavPage />} />
+            <Route path="/sentiment" element={<SentimentPage />} />
             <Route path="/stock-list" element={<StockListPage />} />
-            {/* 旧路径重定向，防止书签失效 */}
+            <Route path="/indicators" element={<IndicatorLibPage />} />
+            <Route path="/gallery" element={<StrategyGalleryPage />} />
+            {/* ── 软挡路由：访客能看到表单 UI，关键按钮在 PR 3 拦截 ──── */}
+            <Route path="/screening" element={<ScreeningPage />} />
+            <Route path="/backtest" element={<BacktestPage />} />
+            {/* ── 硬挡路由：纯数据列表，访客看空白无意义 ────────── */}
+            <Route path="/dav" element={
+              <ProtectedRoute gateMessage="登录后管理你的大V看板（ABCD 分类、派息率跟踪）">
+                <DavPage />
+              </ProtectedRoute>
+            } />
+            <Route path="/watchlist" element={
+              <ProtectedRoute gateMessage="登录后查看和编辑自选股池">
+                <WatchlistPage />
+              </ProtectedRoute>
+            } />
+            <Route path="/backtest/history" element={
+              <ProtectedRoute gateMessage="登录后查看你的历史回测记录">
+                <BacktestHistoryPage />
+              </ProtectedRoute>
+            } />
+            {/* ── 管理员路由：需 is_admin 才能访问 ──────────────── */}
+            <Route path="/sync" element={
+              <ProtectedRoute adminOnly gateMessage="数据同步仅管理员可用">
+                <SyncPage />
+              </ProtectedRoute>
+            } />
+            <Route path="/sync/logs" element={
+              <ProtectedRoute adminOnly gateMessage="同步日志仅管理员可用">
+                <SyncLogsPage />
+              </ProtectedRoute>
+            } />
+            <Route path="/data-center" element={
+              <ProtectedRoute adminOnly gateMessage="数据池（运维）仅管理员可用">
+                <DataCenterPage />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/users" element={
+              <ProtectedRoute adminOnly gateMessage="用户管理仅管理员可用">
+                <UserManagementPage currentUser={currentUser as UserInfo} />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/auto-update" element={
+              <ProtectedRoute adminOnly gateMessage="自动更新配置仅管理员可用">
+                <AutoUpdatePage currentUser={currentUser as UserInfo} />
+              </ProtectedRoute>
+            } />
+            {/* ── 兼容旧书签 + 兜底 ────────────────────────────── */}
             <Route path="/buy" element={<Navigate to="/" replace />} />
             <Route path="/sell" element={<Navigate to="/" replace />} />
-            <Route path="/indicators" element={<IndicatorLibPage />} />
-            <Route path="/sync" element={<SyncPage />} />
-            <Route path="/sync/logs" element={<SyncLogsPage />} />
-            <Route path="/data-center" element={<DataCenterPage />} />
-            <Route path="/screening" element={<ScreeningPage />} />
-            <Route path="/sentiment" element={<SentimentPage />} />
-            {/* 回测功能 */}
-            <Route path="/gallery" element={<StrategyGalleryPage />} />
-            <Route path="/backtest" element={<BacktestPage />} />
-            <Route path="/backtest/history" element={<BacktestHistoryPage />} />
-            {/* 系统管理（仅管理员可访问） */}
-            <Route path="/admin/users" element={<UserManagementPage currentUser={currentUser} />} />
-            <Route path="/admin/auto-update" element={<AutoUpdatePage currentUser={currentUser} />} />
-            {/* 兜底：任何未知 URL 都跳回首页 */}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
       </Content>
 
       {/* ── 底部免责声明 ──────────────────────────────────────── */}
-      {/*
-        根据需求文档，全站合规要求：每个页面底部必须固定显示精简免责声明。
-        这里放在 Layout Footer 里，所有页面自动继承，无需每个页面单独写。
-      */}
       <Footer
         style={{
           textAlign: "center",
@@ -376,11 +399,7 @@ function AppShell({ currentUser, onLogout }: { currentUser: UserInfo; onLogout: 
         </Text>
       </Footer>
 
-      {/* ── 首次访问免责声明弹窗 ──────────────────────────────── */}
-      {/*
-        closable=false + maskClosable=false：强制用户必须勾选并点击确认才能关闭，
-        不允许点击遮罩或按 ESC 绕过（合规要求）。
-      */}
+      {/* ── 首次访问免责声明弹窗（强制阅读） ────────────────── */}
       <Modal
         title="使用须知 · 免责声明"
         open={disclaimerOpen}

@@ -16,6 +16,21 @@
  * - 自选股池：fetchWatchlist、addToWatchlist、removeFromWatchlist
  */
 import axios from "axios";
+import { triggerLoginGate } from "./loginGateBus";
+
+/**
+ * 扩展 axios 请求 config 的可选字段：
+ *   - _skipLoginGate: 即使响应是 401 也不触发"会话过期"登录 Modal。
+ *     用于初始 /auth/me 校验、登录 Modal 自己发起的请求等不应反弹 Modal 的场景。
+ */
+declare module "axios" {
+  interface AxiosRequestConfig {
+    _skipLoginGate?: boolean;
+  }
+  interface InternalAxiosRequestConfig {
+    _skipLoginGate?: boolean;
+  }
+}
 
 /**
  * Axios 实例：统一配置后端地址和超时时间
@@ -42,9 +57,19 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (axios.isAxiosError(err) && err.response?.status === 401) {
+      const cfg = err.config as { _skipLoginGate?: boolean } | undefined;
+      const hadToken = localStorage.getItem("gb_token") !== null;
+      // 无论如何都清掉过期的凭据
       localStorage.removeItem("gb_token");
       localStorage.removeItem("gb_user");
-      window.location.href = "/login";
+      // 只有"原本有 token"的 401 才视为"会话过期"弹 Modal；
+      // 访客态（从无 token）的 401 是预期（入口级软挡应已拦截），静默即可
+      if (hadToken && !cfg?._skipLoginGate) {
+        triggerLoginGate({
+          title: "会话已过期",
+          message: "登录状态已失效，请重新登录以继续使用",
+        });
+      }
     }
     return Promise.reject(err);
   },
@@ -1258,9 +1283,12 @@ export async function login(username: string, password: string): Promise<TokenOu
   return data;
 }
 
-/** 获取当前登录用户信息（用于验证 token 有效性） */
+/** 获取当前登录用户信息（用于验证 token 有效性）
+ * 带 _skipLoginGate：如果 token 失效（401），静默清理凭据即可，
+ * 无需弹登录 Modal 打扰用户（App 首屏会自然转入访客态，右上角改显「登录」按钮）。
+ */
 export async function fetchCurrentUser(): Promise<UserInfo> {
-  const { data } = await api.get<UserInfo>("/auth/me");
+  const { data } = await api.get<UserInfo>("/auth/me", { _skipLoginGate: true });
   return data;
 }
 
