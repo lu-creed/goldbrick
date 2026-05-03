@@ -59,7 +59,11 @@ class BarDaily(Base):
     __tablename__ = "bars_daily"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), index=True)  # 关联 symbols 表
+    # 注意：symbol_id 上不单独建索引 —— 下方 UniqueConstraint(symbol_id, trade_date)
+    # 的复合索引左前缀已经覆盖 `WHERE symbol_id = ?` 类查询，单列索引是冗余副本。
+    # 历史上这里有 index=True 生成的 ix_bars_daily_symbol_id，已由 alembic
+    # a3b17c9d5e24 迁移删除。
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"))  # 关联 symbols 表
     trade_date: Mapped[Date] = mapped_column(Date, index=True)           # 交易日
     open: Mapped[float] = mapped_column(Numeric(18, 6))                  # 开盘价
     high: Mapped[float] = mapped_column(Numeric(18, 6))                  # 最高价
@@ -92,7 +96,8 @@ class AdjFactorDaily(Base):
     __tablename__ = "adj_factors_daily"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), index=True)
+    # symbol_id 不单独建索引，理由同 BarDaily：UniqueConstraint 复合索引前缀已覆盖。
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"))
     trade_date: Mapped[Date] = mapped_column(Date, index=True)
     adj_factor: Mapped[float] = mapped_column(Numeric(18, 8))  # 复权因子（≥1.0，分红后会重新计算历史值）
     source: Mapped[str] = mapped_column(String(32), default="tushare")
@@ -238,7 +243,9 @@ class IndicatorPreDaily(Base):
     __tablename__ = "indicator_pre_daily"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"), index=True)
+    # symbol_id 不单独建索引，理由同 BarDaily：UniqueConstraint(symbol_id, trade_date, adj_mode)
+    # 复合索引前缀已覆盖所有按 symbol_id 过滤的查询。
+    symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"))
     trade_date: Mapped[Date] = mapped_column(Date, index=True)
     adj_mode: Mapped[str] = mapped_column(String(8), default="none")    # none | qfq | hfq
     payload: Mapped[str] = mapped_column(Text, default="{}")            # JSON 字典，键为子指标名
