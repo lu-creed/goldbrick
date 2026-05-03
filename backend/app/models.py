@@ -8,7 +8,7 @@ SQLAlchemy 会根据这些定义自动建表、做 INSERT/SELECT/UPDATE。
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -234,11 +234,31 @@ class IndicatorSubIndicator(Base):
 
 
 class IndicatorPreDaily(Base):
-    """日线指标预计算缓存：将 MA/KDJ/BOLL/MACD 等内置指标结果序列化存入 JSON，加速查询。
+    """日线指标预计算缓存（列式存储）：MA/KDJ/BOLL/MACD 等内置指标每日结果。
 
-    adj_mode 目前仅写入 'qfq'（前复权）和 'none'（不复权），与全市场回测口径一致。
-    payload 是 JSON 字典，键为子指标名（如 'MA5'、'K'），值为当日数值。
-    同步时由 indicator_precompute.py 在每只股票拉取完成后自动重建。
+    设计演进（0.0.4-dev → P1a）：
+        旧版本（V1.0.9）：payload TEXT 存 JSON 字典，优点灵活但 JSON 字符串
+        比原始 float 大 3-5 倍（字段名 × 17M 行的重复开销）。
+        本版本（P1a）：每个指标一列 REAL（SQLite = 8 字节 IEEE754，PG = DOUBLE PRECISION）。
+        在保持全市场回测速度的前提下，预计回收 5-7 GB 磁盘。
+
+    列命名约定：
+        - 原始 OHLCV（冗余自 bars_daily 的复权后价格）：close / open / high / low / volume / turnover_rate
+        - 多参数指标：<指标名><参数>，如 ma5, expma12, rsi6
+        - 多输出子线：<指标名>_<子线>，如 boll_mid, kdj_k, macd_bar
+        - 原 JSON 中用中文字符的 key "MACD柱" → SQL 列 macd_bar
+        - 原 KDJ 单字母 key K/D/J → SQL 列 kdj_k/kdj_d/kdj_j（避免与 DMA 的 D 冲突语义）
+
+    名称映射详见 app/services/indicator_precompute.py::INDICATOR_COLUMN_MAP。
+
+    adj_mode 取值：qfq / hfq（见 sync_runner 填充路径）。
+    UniqueConstraint：同一标的、同一日、同一复权口径只有一行（upsert 靠 DELETE+INSERT）。
+
+    新增一个内置指标时要做的事：
+        1. 在本类加一个 Mapped[Optional[float]] 列
+        2. 在 INDICATOR_COLUMN_MAP 加一条映射
+        3. 写一份 alembic migration：op.add_column(...)
+        4. 跑 scripts/rebuild_indicator_pre_cache.py 重填所有行的新列
     """
     __tablename__ = "indicator_pre_daily"
 
@@ -247,8 +267,98 @@ class IndicatorPreDaily(Base):
     # 复合索引前缀已覆盖所有按 symbol_id 过滤的查询。
     symbol_id: Mapped[int] = mapped_column(ForeignKey("symbols.id"))
     trade_date: Mapped[Date] = mapped_column(Date, index=True)
-    adj_mode: Mapped[str] = mapped_column(String(8), default="none")    # none | qfq | hfq
-    payload: Mapped[str] = mapped_column(Text, default="{}")            # JSON 字典，键为子指标名
+    adj_mode: Mapped[str] = mapped_column(String(8), default="none")    # qfq | hfq（实际写入）/ none（保留）
+
+    # ---- OHLCV（复权后价格/成交量；冗余自 bars_daily 便于一次读全）----
+    close:         Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    open:          Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    high:          Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    low:           Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    volume:        Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    turnover_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- MA 移动平均线 ----
+    ma5:   Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ma10:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ma20:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ma30:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ma60:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- EXPMA 指数移动平均 ----
+    expma12: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    expma26: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- MACD ----
+    dif:      Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    dea:      Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    macd_bar: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 对应旧 "MACD柱"
+
+    # ---- KDJ 随机指标 ----
+    kdj_k: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    kdj_d: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    kdj_j: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- BOLL 布林带 ----
+    boll_mid:   Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    boll_upper: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    boll_lower: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- RSI 相对强弱指数 ----
+    rsi6:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rsi12: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rsi24: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- ATR 真实波动幅度 ----
+    atr14:     Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    atr14_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- WR 威廉指标 ----
+    wr6:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    wr10: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- CCI 商品通道指数 ----
+    cci14: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- BIAS 乖离率 ----
+    bias6:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bias12: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bias24: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- ROC 变化率 ----
+    roc6:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    roc12: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- PSY 心理线 ----
+    psy12: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- VMA 量能均线 ----
+    vma5:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    vma10: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    vma20: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- OBV 能量潮 ----
+    obv: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- DMA 差动移动平均 ----
+    dma:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ddma: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- TRIX 三重指数平滑 ----
+    trix12: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    trma:   Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- DMI 趋向指标 ----
+    pdi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mdi: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    adx: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- STDDEV 标准差 ----
+    stddev10: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    stddev20: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # ---- ARBR 人气指标 ----
+    ar: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    br: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("symbol_id", "trade_date", "adj_mode", name="uq_indicator_pre_symbol_date_adj"),
