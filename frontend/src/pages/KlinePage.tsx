@@ -27,6 +27,7 @@ import {
 } from "../api/client";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, MA_COLORS, RISE_COLOR } from "../constants/theme";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useAuth } from "../hooks/useAuth";
 
 /** K 线周期选项列表（周期值与后端接口对应） */
 const intervals: { label: string; value: Interval }[] = [
@@ -63,6 +64,7 @@ export default function KlinePage() {
   // searchParams：从 URL 读取 ?ts_code=xxx 参数（其他页面跳转过来时会带上）
   const [searchParams] = useSearchParams();
   const tsFromUrl = searchParams.get("ts_code");
+  const { isGuest, openLoginGate } = useAuth();
 
   // chartRef：指向 ECharts 图表容器 DOM 元素
   const chartRef = useRef<HTMLDivElement>(null);
@@ -794,7 +796,18 @@ export default function KlinePage() {
           <Select
             style={{ minWidth: 180 }}
             value={subIndicator}
-            onChange={(v) => setSubIndicator(v as SubIndicator)}
+            onChange={(v) => {
+              // 访客软挡:「自定义指标」依赖用户私有 DSL,访客无 → 弹登录 Modal,
+              // 成功后回调自动切换到 CUSTOM 选项
+              if (v === "CUSTOM" && isGuest) {
+                openLoginGate({
+                  message: "登录后可以在副图叠加你自己的 DSL 自定义指标子线",
+                  onSuccess: () => setSubIndicator("CUSTOM"),
+                });
+                return;
+              }
+              setSubIndicator(v as SubIndicator);
+            }}
             options={[
               { value: "VOL", label: "副图: 成交量" },
               { value: "MACD", label: "副图: MACD" },

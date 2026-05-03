@@ -59,6 +59,7 @@ import {
 } from "../api/client";
 import StrategyDrawer from "../components/StrategyDrawer";
 import { FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
+import { useAuth } from "../hooks/useAuth";
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
 
@@ -365,6 +366,7 @@ function MultiCondRowCard({
 
 export default function ScreeningPage() {
   // ── 表单 & 选股执行状态 ──────────────────────────────────
+  const { isGuest, openLoginGate } = useAuth();
   const [form] = Form.useForm();
   const [multiForm] = Form.useForm();
   // 模式切换：单条件（沿用旧 form）/ 多条件（新的多条件 form）
@@ -657,6 +659,13 @@ export default function ScreeningPage() {
   }, [form, multiForm]);
 
   const onRun = async () => {
+    // 访客软挡:选股会往 screening_history 写记录、消耗计算资源,必须先登录
+    if (isGuest) {
+      openLoginGate({
+        message: "登录后即可执行全市场选股扫描,结果会自动保存到你的选股历史",
+      });
+      return;
+    }
     // 多条件模式：组装 logic 提交
     if (mode === "multi") {
       try {
@@ -849,14 +858,26 @@ export default function ScreeningPage() {
                         <Button
                           size="small"
                           icon={<SaveOutlined />}
-                          onClick={() => setSaveStrategyOpen(true)}
+                          onClick={() => {
+                            if (isGuest) {
+                              openLoginGate({ message: "登录后即可把当前选股条件保存为策略,附带 Markdown 研究笔记" });
+                              return;
+                            }
+                            setSaveStrategyOpen(true);
+                          }}
                         >
                           保存为策略
                         </Button>
                         <Button
                           size="small"
                           icon={<FolderOpenOutlined />}
-                          onClick={() => setStrategyDrawerOpen(true)}
+                          onClick={() => {
+                            if (isGuest) {
+                              openLoginGate({ message: "登录后可查看和加载你保存过的策略" });
+                              return;
+                            }
+                            setStrategyDrawerOpen(true);
+                          }}
                         >
                           我的策略
                         </Button>

@@ -78,6 +78,7 @@ import StrategyDrawer from "../components/StrategyDrawer";
 import StarCard from "../components/StarCard";
 import { ECHARTS_BASE_OPTION, FALL_COLOR, FLAT_COLOR, RISE_COLOR, zebraRowClass } from "../constants/theme";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useAuth } from "../hooks/useAuth";
 import { computeStars, generateNarrative } from "../utils/backtestNarrative";
 
 const { Title, Text, Paragraph } = Typography;
@@ -1021,6 +1022,7 @@ function TradeDetailDrawer({ open, onClose, onAfterClose, trade, params, startDa
 }
 
 export default function BacktestPage() {
+  const { isGuest, openLoginGate } = useAuth();
   const [form] = Form.useForm();
   const [multiForm] = Form.useForm();
   // 模式切换：单条件（沿用旧 form + 模板）/ 多条件（多条件买卖 Form.List）
@@ -1470,6 +1472,13 @@ export default function BacktestPage() {
 
   // ── 参数敏感性扫描:启动异步任务 + 轮询 ────────────────────────
   const startSensitivity = useCallback(async (paramPath: string, values: number[]) => {
+    // 访客软挡(双保险:基线回测入口已拦截,访客理论上到不了这里,但以防万一)
+    if (isGuest) {
+      openLoginGate({
+        message: "登录后即可对当前回测做参数敏感性扫描,检验策略是否对参数过拟合",
+      });
+      return;
+    }
     try {
       // 从 form 读当前完整参数作为 base_params(复用 onRun 里的字段组装逻辑的思路)
       const v = form.getFieldsValue();
@@ -1508,7 +1517,7 @@ export default function BacktestPage() {
     } catch (e) {
       message.error(getApiErrorMessage(e));
     }
-  }, [form]);
+  }, [form, isGuest, openLoginGate]);
 
   // 敏感性扫描轮询:任务创建后每 1.5 秒查一次状态,done/failed 时停止
   useEffect(() => {
@@ -1530,6 +1539,13 @@ export default function BacktestPage() {
   }, [sensitivityTaskId, sensitivityStatus?.status]);
 
   const onRun = async () => {
+    // 访客软挡:回测会写 backtest_records、吃全市场扫描资源,必须先登录
+    if (isGuest) {
+      openLoginGate({
+        message: "登录后即可执行回测,结果会保存到你的历史记录中,可以随时还原参数重新跑",
+      });
+      return;
+    }
     // 多条件模式：组装 buy_logic / sell_logic 提交
     if (mode === "multi") {
       try {
@@ -1671,14 +1687,26 @@ export default function BacktestPage() {
             <Button
               size="small"
               icon={<SaveOutlined />}
-              onClick={() => setSaveStrategyOpen(true)}
+              onClick={() => {
+                if (isGuest) {
+                  openLoginGate({ message: "登录后即可把当前回测参数保存为策略,附带 Markdown 研究笔记" });
+                  return;
+                }
+                setSaveStrategyOpen(true);
+              }}
             >
               保存为策略
             </Button>
             <Button
               size="small"
               icon={<FolderOpenOutlined />}
-              onClick={() => setStrategyDrawerOpen(true)}
+              onClick={() => {
+                if (isGuest) {
+                  openLoginGate({ message: "登录后可查看和加载你保存过的策略" });
+                  return;
+                }
+                setStrategyDrawerOpen(true);
+              }}
             >
               我的策略
             </Button>

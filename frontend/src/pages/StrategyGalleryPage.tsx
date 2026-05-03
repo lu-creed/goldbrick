@@ -33,6 +33,7 @@ import {
   getApiErrorMessage,
 } from "../api/client";
 import { FALL_COLOR, RISE_COLOR } from "../constants/theme";
+import { useAuth } from "../hooks/useAuth";
 
 const { Text, Paragraph, Title } = Typography;
 
@@ -49,6 +50,7 @@ type CategoryFilter = "全部" | "逆势" | "趋势" | "突破" | "价值";
 
 export default function StrategyGalleryPage() {
   const navigate = useNavigate();
+  const { isGuest, openLoginGate } = useAuth();
   const [cards, setCards] = useState<StrategyGalleryCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<CategoryFilter>("全部");
@@ -82,8 +84,16 @@ export default function StrategyGalleryPage() {
       message.warning("该预置策略的底层指标尚未就绪,请联系管理员检查后端种子数据");
       return;
     }
-    // 跳转到回测页,通过 query 参数预填策略
-    navigate(`/backtest?preset=${card.strategy_id}`);
+    const doNavigate = () => navigate(`/backtest?preset=${card.strategy_id}`);
+    // 访客软挡:弹 Modal 提示登录,登录成功后自动跳转回测页预填参数
+    if (isGuest) {
+      openLoginGate({
+        message: `登录后即可回测策略「${card.display_name}」,参数将自动预填,你只需确认时间范围和初始资金`,
+        onSuccess: doNavigate,
+      });
+      return;
+    }
+    doNavigate();
   };
 
   return (

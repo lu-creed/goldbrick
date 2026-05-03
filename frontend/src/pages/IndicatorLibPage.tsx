@@ -38,6 +38,7 @@ import {
   type UserIndicatorOut,
   type UserIndicatorValidateOut,
 } from "../api/client";
+import { useAuth } from "../hooks/useAuth";
 import { zebraRowClass } from "../constants/theme";
 
 const { Text } = Typography;
@@ -78,6 +79,7 @@ function normalizeDefinition(d: Record<string, unknown>): UserIndicatorDefinitio
 
 export default function IndicatorLibPage() {
   const { token } = theme.useToken();
+  const { isGuest, openLoginGate } = useAuth();
   const [mainTab, setMainTab] = useState<"builtin" | "custom">("builtin");
 
   const [list, setList] = useState<IndicatorListItem[]>([]);
@@ -189,6 +191,13 @@ export default function IndicatorLibPage() {
   }, [validateResult]);
 
   const openCreateModal = () => {
+    // 访客软挡双保险(切 Tab 已拦;直接 URL 或从其他入口触发时再拦一次)
+    if (isGuest) {
+      openLoginGate({
+        message: "登录后可新建自定义指标(DSL 公式树或单行表达式)",
+      });
+      return;
+    }
     setEditing(null);
     setValidateResult(null);
     setEditorMode("dsl");
@@ -431,6 +440,13 @@ export default function IndicatorLibPage() {
       <Tabs
         activeKey={mainTab}
         onChange={(k) => {
+          // 访客软挡:自定义指标 Tab 依赖用户私有数据,切换前弹登录 Modal
+          if (k === "custom" && isGuest) {
+            openLoginGate({
+              message: "登录后可创建、编辑你自己的 DSL 自定义指标(支持多子线、参数化、引用内置指标)",
+            });
+            return;
+          }
           setMainTab(k as "builtin" | "custom");
           setDetail(null);
         }}
