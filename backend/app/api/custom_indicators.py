@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Indicator, UserIndicator
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_user_optional
 from app.schemas import (
     BuiltinCatalogItem,
     CustomIndicatorVariableNamesOut,
@@ -119,7 +119,7 @@ def _ensure_trial_ok_legacy(db: Session, expr: str, trial_ts: str) -> None:
 
 
 @router.get("/builtin-catalog", response_model=List[BuiltinCatalogItem])
-def builtin_catalog_for_editor(_user=Depends(get_current_user), db: Session = Depends(get_db)):
+def builtin_catalog_for_editor(_user=Depends(get_current_user_optional), db: Session = Depends(get_db)):
     """获取内置指标目录（供 DSL 编辑器中「引用内置指标」选择器使用）。
 
     返回所有内置指标及其子线列表，格式：

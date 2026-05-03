@@ -22,7 +22,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user
+from app.auth import get_current_user_optional
 from app.database import get_db
 from app.schemas import DailyUniverseOut, DailyUniverseRow
 from app.services.daily_universe import list_daily_universe, parse_daily_universe_filters
@@ -66,7 +66,7 @@ def get_daily_stocks(
     pe_max: Optional[float] = Query(None, description="市盈率（动态）最大值"),
     pb_min: Optional[float] = Query(None, description="市净率最小值"),
     pb_max: Optional[float] = Query(None, description="市净率最大值"),
-    _user=Depends(get_current_user),
+    _user=Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
     """按交易日列出全市场 A 股行情，支持筛选、排序、分页。

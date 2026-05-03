@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user
+from app.auth import get_current_user_optional
 from app.database import get_db
 from app.schemas import (
     ReplayDailyOut,
@@ -37,7 +37,7 @@ router = APIRouter(prefix="/replay", tags=["replay"])
 def replay_daily(
     trade_date: Optional[date] = None,
     list_limit: int = Query(300, ge=50, le=2000),
-    _user=Depends(get_current_user),
+    _user=Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
     """单日市场情绪复盘聚合：涨跌家数、分布桶、涨跌停、换手、三大股指、振幅榜。
@@ -81,7 +81,7 @@ def replay_daily(
 @router.get("/sentiment-trend", response_model=SentimentTrendOut)
 def sentiment_trend(
     days: int = Query(60, ge=5, le=120, description="最多返回最近多少个交易日的情绪数据"),
-    _user=Depends(get_current_user),
+    _user=Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
     """近N日市场情绪趋势（大V视角仪表盘使用）。

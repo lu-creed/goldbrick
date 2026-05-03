@@ -13,6 +13,7 @@ from app.database import get_db
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 def get_password_hash(password: str) -> str:
@@ -50,6 +51,27 @@ def get_current_user(
     if user is None:
         raise exc
     return user
+
+
+def get_current_user_optional(
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    db: Session = Depends(get_db),
+):
+    """FastAPI 依赖（可选鉴权）：Token 有效返回 User；无 Token / Token 无效 / 用户不存在或被禁用一律返回 None，不抛 401。
+
+    用于允许访客浏览但登录用户可获得个性化数据的公开接口。调用方可通过判断返回值是否为 None 区分访客态与登录态。
+    """
+    from app.models import User
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=["HS256"])
+        username: Optional[str] = payload.get("sub")
+        if not username:
+            return None
+    except JWTError:
+        return None
+    return db.query(User).filter(User.username == username, User.is_active.is_(True)).first()
 
 
 def get_current_admin(current_user=Depends(get_current_user)):

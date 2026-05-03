@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_admin, get_current_user
+from app.auth import get_current_admin, get_current_user_optional
 from app.database import get_db
 from app.models import Indicator
 from app.services.indicator_pedia import get_indicator_pedia, list_indicator_pedia
@@ -113,7 +113,7 @@ class IndicatorPediaOut(BaseModel):
 
 
 @router.get("", response_model=List[IndicatorListItem])
-def list_indicators(_user=Depends(get_current_user), db: Session = Depends(get_db)):
+def list_indicators(_user=Depends(get_current_user_optional), db: Session = Depends(get_db)):
     """获取所有内置指标的列表（简要信息，不含参数和子线详情）。"""
     rows = db.query(Indicator).order_by(Indicator.id.asc()).all()
     return [
@@ -146,13 +146,13 @@ def seed(force: bool = False, _admin=Depends(get_current_admin), db: Session = D
 
 # 人话百科端点必须放在 /{indicator_id} 之前声明,否则 "/pedia/..." 会被误认为 indicator_id=pedia
 @router.get("/pedia", response_model=List[IndicatorPediaOut])
-def list_all_pedia(_user=Depends(get_current_user)):
+def list_all_pedia(_user=Depends(get_current_user_optional)):
     """获取所有内置指标的人话百科(用于指标百科页一次性列表展示)。"""
     return [IndicatorPediaOut(**p) for p in list_indicator_pedia()]
 
 
 @router.get("/pedia/{code}", response_model=IndicatorPediaOut)
-def get_pedia(code: str, _user=Depends(get_current_user)):
+def get_pedia(code: str, _user=Depends(get_current_user_optional)):
     """获取单个指标的人话百科。code 大小写不敏感,未收录返回 404。"""
     p = get_indicator_pedia(code)
     if p is None:
@@ -161,7 +161,7 @@ def get_pedia(code: str, _user=Depends(get_current_user)):
 
 
 @router.get("/{indicator_id}", response_model=IndicatorDetail)
-def get_indicator(indicator_id: int, _user=Depends(get_current_user), db: Session = Depends(get_db)):
+def get_indicator(indicator_id: int, _user=Depends(get_current_user_optional), db: Session = Depends(get_db)):
     """获取单个内置指标的完整详情（含参数列表和子线列表）。
 
     用于指标库页点击某个指标后弹出详情卡片展示。

@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_user_optional
 from app.models import BarDaily, Symbol
 from app.schemas import BarPoint, CustomIndicatorPoint, CustomIndicatorSeriesOut, Interval
 from app.services.adj import AdjType, apply_adj, build_adj_map, get_latest_factor
@@ -39,7 +39,7 @@ def get_bars(
     start: Optional[date] = Query(None),
     end: Optional[date] = Query(None),
     adj: AdjType = Query("none"),
-    _user=Depends(get_current_user),
+    _user=Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
     """获取 K 线数据。

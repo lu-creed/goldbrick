@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_user_optional
 from app.database import get_db
 from app.models import BarDaily, Strategy, Symbol, UserIndicator
 from app.schemas import (
@@ -142,7 +142,7 @@ def _dump_logic(logic: Optional[StrategyLogic]) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/gallery", response_model=List[StrategyGalleryCard])
-def get_strategy_gallery(_user=Depends(get_current_user), db: Session = Depends(get_db)):
+def get_strategy_gallery(_user=Depends(get_current_user_optional), db: Session = Depends(get_db)):
     """策略广场:返回 12 个预置策略的卡片数据(含人话描述 + 预跑回测快照)。
 
     元数据(category/one_liner/good_for/preview)来自 strategy_seed.py 的声明,不落库;
