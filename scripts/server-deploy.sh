@@ -40,6 +40,8 @@ pip install -q --upgrade pip \
 pip install -q -r requirements.txt \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
     --trusted-host pypi.tuna.tsinghua.edu.cn
+# 磁盘瘦身：清 pip 下载缓存（不影响已装依赖）
+pip cache purge -q 2>/dev/null || true
 deactivate
 success "后端依赖就绪"
 
@@ -48,6 +50,10 @@ info "构建前端..."
 cd "$APP_DIR/frontend"
 npm install --registry https://registry.npmmirror.com -q
 npm run build
+# 磁盘瘦身：Nginx 只用 dist/，node_modules 构建后即可删除（节省 ~300MB）
+info "清理 node_modules (节省 ~300MB)..."
+rm -rf node_modules
+npm cache clean --force 2>/dev/null || true
 success "前端构建完成"
 
 # 配置 Nginx

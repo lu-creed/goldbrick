@@ -88,6 +88,9 @@ setup_backend() {
         -i https://pypi.tuna.tsinghua.edu.cn/simple \
         --trusted-host pypi.tuna.tsinghua.edu.cn
 
+    # 磁盘瘦身：装完 wheel 后清 pip 下载缓存（~/.cache/pip 经常攒到几百 MB）
+    pip cache purge -q 2>/dev/null || true
+
     deactivate
     success "后端依赖就绪"
 }
@@ -100,6 +103,14 @@ build_frontend() {
     cd "$APP_DIR/frontend"
     npm install --registry https://registry.npmmirror.com -q
     npm run build
+
+    # 磁盘瘦身：Nginx 只读 dist/，node_modules 构建完就不再需要（~300MB）。
+    # 下次部署重新 npm install，代价是多花 1 分钟，换来常驻盘 -300MB。
+    info "清理 node_modules (节省 ~300MB, 下次部署会重新 npm install)..."
+    rm -rf node_modules
+    # 清 npm 全局缓存（下载 tarball），不影响已装包
+    npm cache clean --force 2>/dev/null || true
+
     success "前端构建完成"
 }
 
