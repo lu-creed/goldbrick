@@ -3,14 +3,20 @@
 历史背景：
 - V1.0.9 阶段一仅落 qfq，hfq 路径靠 user_indicator_compute.load_adjusted_bar_sequence 内存现算。
 - 0.0.4-dev：开放 hfq 预计算，长期收益率对比口径也能复用缓存，减少图表首屏延迟。
+- 0.0.4-dev（救火）：新增「只预算近 N 天」模式（settings.indicator_pre_recent_days）。
+  老数据由 load_indicator_map_from_pre 返回 None 时自动回退到内存现算，避免让这张表
+  占用几 GB 磁盘（原来每只股票全量历史 × 多个子指标 × JSON 文本存储）。
 """
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
+from typing import Optional
 
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import BarDaily, IndicatorPreDaily
 from app.services.adj import AdjType, apply_adj, build_adj_map, get_latest_factor
 from app.services.indicator_compute import compute_indicators
@@ -63,10 +69,40 @@ def _qfq_adj_bars_for_symbol(db: Session, symbol_id: int):
     return _adj_bars_for_symbol(db, symbol_id, "qfq")
 
 
+def _recent_cutoff() -> Optional[date]:
+    """读取配置里的 indicator_pre_recent_days。返回 None 表示保留全部；返回 date 表示只写此日期之后。
+
+    0 表示「完全不预算」，调用方看到 0 应直接跳过落库。
+    """
+    n = int(getattr(settings, "indicator_pre_recent_days", 0) or 0)
+    if n <= 0:
+        return None
+    return date.today() - timedelta(days=n)
+
+
 def rebuild_indicator_pre_for_symbol(db: Session, symbol_id: int, adj_mode: str = "qfq") -> int:
-    """删除该标的该复权口径的旧行，按全历史日线重算并写入。支持 qfq/hfq。返回写入行数。"""
+    """删除该标的该复权口径的旧行，按全历史日线重算并只写入「近 N 天」结果。支持 qfq/hfq。
+
+    - settings.indicator_pre_recent_days == 0 → 完全不落盘（返回 0）
+    - settings.indicator_pre_recent_days  > 0 → 只写入 today - N 之后的交易日
+    - settings.indicator_pre_recent_days 为负数/缺失 → 保留旧行为（全量写入）
+
+    返回实际写入行数。
+    """
     if adj_mode not in _SUPPORTED_ADJ:
         return 0
+    # 受控模式：0 = 彻底不预算（老数据全部清，让 load_indicator_map_from_pre 走回退路径）
+    recent_days_cfg = int(getattr(settings, "indicator_pre_recent_days", -1))
+    if recent_days_cfg == 0:
+        db.execute(
+            delete(IndicatorPreDaily).where(
+                IndicatorPreDaily.symbol_id == symbol_id,
+                IndicatorPreDaily.adj_mode == adj_mode,
+            )
+        )
+        db.commit()
+        return 0
+
     db.execute(
         delete(IndicatorPreDaily).where(
             IndicatorPreDaily.symbol_id == symbol_id,
@@ -78,8 +114,11 @@ def rebuild_indicator_pre_for_symbol(db: Session, symbol_id: int, adj_mode: str 
     if not adj_bars:
         return 0
     ind_map = compute_indicators(adj_bars, start_date=None)
+    cutoff = _recent_cutoff()  # None 表示写全量；date 表示只写 >= cutoff 的
     n = 0
     for td, row in ind_map.items():
+        if cutoff is not None and td < cutoff:
+            continue
         payload = json.dumps({k: float(v) for k, v in row.items() if isinstance(v, (int, float))})
         db.add(
             IndicatorPreDaily(

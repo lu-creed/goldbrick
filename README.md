@@ -4,7 +4,7 @@
 
 > 本工具所有内容均为客观数据呈现，**不构成任何投资建议**。历史回测结果不代表未来实际收益。
 
-## 1. 当前已实现能力（截至 0.0.4-dev）
+## 1. 当前已实现能力（截至 0.0.6-dev）
 
 - **用户与权限**
   - JWT Token 认证（存 `localStorage.gb_token`），启动时自动校验；失效跳登录页
@@ -98,7 +98,7 @@
 
 - 后端：FastAPI + SQLAlchemy + APScheduler
 - 数据库：SQLite（本地开发默认）；**0.0.4 预案**：`database.py` 迁移辅助已跨方言化，`scripts/migrate_sqlite_to_postgres.py` + `docs/POSTGRES_MIGRATION.md` 就绪；触发切换条件：`database is locked` 高频 / uvicorn `workers>1` / 并发用户 > 10
-- 前端：React + Vite + Ant Design + ECharts
+- 前端：React + Vite + Ant Design + **TradingView Lightweight Charts v5**（K 线）+ ECharts（其余图表）
 - 数据源：Tushare（主用）+ AKShare（配额/频率错误自动兜底）
 
 ## 3. 快速启动（本地）
@@ -304,7 +304,7 @@ npm run build
 - `V1.0.0`～`V2.0.1`：历史能力（含多版回测与复盘能力）；详见 `VERSION_SUPPLEMENTS.md` 旧条目
 - `0.0.2-dev`：架构重整，移除 legacy `/api/backtest/*` 与前端回测页；DSL 自定义指标、条件选股、K 线副图自定义序列、个股列表等就绪
 - `0.0.3-dev`：新回测引擎（DSL 条件全市场扫描 + 11 项绩效指标）、指标库新增 RSI/ATR/WR、**大V情绪仪表盘**上线、**大V看板（DAV）**上线、**自选股池**上线
-- `0.0.4-dev`（当前）：
+- `0.0.4-dev`：
   - **Bug 修复**：数据池慢查询（子查询优化）、同步日志权限错误（内存日志降级）
   - **新功能**：同步日志独立页 `/sync/logs`、运行记录删除、用户下拉菜单含免责声明入口、免责声明状态按用户名隔离
   - **精度升级**：选股/回测统一前复权、回测加佣金/印花税/滑点/整手/T+1 次日开盘/基准对比（α 计算）、一字涨跌停自动跳过、`indicator_pre_daily` 双口径、回测结果区可信度徽章条、参数敏感性扫描（±10%/20%/30% 偏移）
@@ -312,3 +312,8 @@ npm run build
   - **稳定性**：AKShare 兜底（配额/频率错误识别增强）、slowapi 限流 + IP 白名单（登录 5/min）
   - **预案**：Postgres 迁移脚本与文档就绪，按并发条件触发切换
   - **需求设计**：期间复盘（`/replay/period`，待开发）、大V看板 v2 最终形态（5 步纠正法结构化）
+- `0.0.5-dev`：访客/登录功能分层——未登录可浏览 K 线/复盘/情绪/个股列表/内置指标；LoginGateModal 替代硬跳登录页；后端可选鉴权 `get_current_user_optional`，放开 7 个只读接口；AuthProvider + ProtectedRoute + useAuth 前端基础设施；免责声明按登录态分叉
+- `0.0.6-dev`（当前）：
+  - **第三数据源**：baostock 作为第三级兜底（Tushare → AKShare → baostock），免费无需 token，新建 `backend/app/services/baostock_ingestion.py`
+  - **指标库升级**：`indicator_compute.py` 全面改用 pandas + numpy 向量化（key 名不变）；新增 **VWAP**（20日成交量加权均价）、**MFI14**（资金流量指数）、**StochRSI_K/D**（随机RSI）三组内置指标
+  - **K 线图升级**：ECharts → TradingView Lightweight Charts v5；新建 `frontend/src/components/KlineChart.tsx`；三区域多 pane 布局（主图 65% + 量图 18% + 副图 20%）；原生金融图表交互体验

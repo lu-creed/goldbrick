@@ -8,6 +8,9 @@ httpx>=0.26.0
 eval_type_backport>=0.2.0  # Python 3.8/3.9 兼容 list[str] 等新式类型注解写法
 tushare>=1.2.0
 akshare>=1.10.0
+pandas>=2.0
+numpy>=1.24
+baostock>=0.8.8
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 bcrypt<4.0

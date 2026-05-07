@@ -265,15 +265,11 @@ def _fetch_and_upsert_index_daily(
 
     db.commit()
     w(f"upserted bar_rows={count} (index, no adj) for {code}")
-    # 写完 K 线后，触发指标预计算缓存重建（便于指标库快速读取）
-    if count > 0:
-        try:
-            from app.services.indicator_precompute import rebuild_indicator_pre_for_symbol
-
-            npre = rebuild_indicator_pre_for_symbol(db, symbol.id, "none")
-            w(f"indicator_pre_daily rebuilt rows={npre} for {code}")
-        except Exception as ex:  # noqa: BLE001
-            w(f"[indicator_pre] rebuild failed for {code}: {ex}")
+    # 注意：本函数不负责触发 indicator_pre_daily 重建。
+    # sync_runner 在调用 fetch_and_upsert_symbol 之后会对 qfq + hfq 两个口径各
+    # rebuild 一次（见 sync_runner.py:375-381）。历史上这里曾有一段用 "none"
+    # 模式调 rebuild 的代码 —— 实际上是 no-op（rebuild 只认 qfq/hfq），纯属死
+    # 代码，已于 wip/fix-ingestion-dead-rebuild 删除。
     return count, False
 
 
@@ -292,7 +288,8 @@ def fetch_and_upsert_symbol(
     3. 调用 adj_factor 接口拉取复权因子（失败时记 adj_fetch_failed=True，不中断）
     4. 将三份数据合并，逐行 upsert 到 bars_daily（已有则更新，没有则新建）
     5. 将复权因子单独写入 adj_factors_daily
-    6. 触发指标预计算缓存重建（rebuild_indicator_pre_for_symbol）
+    （indicator_pre_daily 重建不在本函数职责内：由上层 sync_runner 对 qfq/hfq
+     两口径分别触发，见 sync_runner.py:375-381）
 
     Args:
         db: 数据库 Session。
@@ -361,8 +358,16 @@ def fetch_and_upsert_symbol(
         if not adj_map:
             adj_fetch_failed = True
         if df_daily is None or df_daily.empty:
-            w(f"no daily rows for {code} (Tushare and AKShare both empty)")
-            return 0, False
+            # AKShare 也失败 → 尝试 baostock（免费，无需 token，最后兜底）
+            from app.services.baostock_ingestion import fetch_stock_bars_baostock  # noqa: PLC0415
+            w(f"[BAOSTOCK_FALLBACK] trying baostock for {code}")
+            df_daily, turn_map, adj_map = fetch_stock_bars_baostock(code, s, e)
+            data_source = "baostock"
+            if not adj_map:
+                adj_fetch_failed = True
+            if df_daily is None or df_daily.empty:
+                w(f"no daily rows for {code} (Tushare, AKShare, baostock all empty)")
+                return 0, False
     else:
         # Tushare 成功：补拉换手率和复权因子
         df_basic = pro.daily_basic(ts_code=code, start_date=s, end_date=e, fields="ts_code,trade_date,turnover_rate")
@@ -496,15 +501,7 @@ def fetch_and_upsert_symbol(
     else:
         w(f"upserted bar_rows={count} adj_factor_rows={adj_count} for {code}")
 
-    # 触发指标预计算缓存重建（更新 indicator_pre_daily 表）
-    if count > 0:
-        try:
-            from app.services.indicator_precompute import rebuild_indicator_pre_for_symbol
-
-            npre = rebuild_indicator_pre_for_symbol(db, symbol.id, "none")
-            w(f"indicator_pre_daily rebuilt rows={npre} for {code}")
-        except Exception as ex:  # noqa: BLE001
-            w(f"[indicator_pre] rebuild failed for {code}: {ex}")
+    # 注意：本函数不负责触发 indicator_pre_daily 重建 —— 理由同 _fetch_and_upsert_index_daily。
     return count, adj_fetch_failed
 
 

@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     # 空则复用 ip_whitelist；两者都空则完全放开
     admin_ip_whitelist: str = ""
 
+    # ── 磁盘/数据保留策略（救火新增）─────────────────────────
+    # 历史数据保留年数：超过此年限的日线、复权因子、指标缓存会在定期 cron 里被清理。
+    # 0 表示关闭清理（保留全部历史）。默认 10 年，符合绝大多数股票分析场景。
+    history_retention_years: int = 10
+    # 指标预计算缓存只写入最近 N 天；N=0 表示完全不预算（所有请求回退到内存现算）。
+    # 默认 60 天，足够覆盖 MA60 等最长周期指标首屏命中，同时把 indicator_pre_daily 从 GB 级压到 MB 级。
+    indicator_pre_recent_days: int = 60
+    # 指标预计算启用的复权模式，逗号分隔。默认只预算 qfq；hfq 按需内存现算（减半存储）。
+    indicator_pre_adj_modes: str = "qfq"
+
 
 def get_backend_root() -> Path:
     """返回 backend/ 目录的绝对路径（即包含 app 包的上一级目录）。
