@@ -1,544 +1,404 @@
 """
 后端内置指标计算：将日线序列转换为每日指标值字典。
 
-支持的指标（参数固定，不可调）：
-  MA5/10/20/30/60  移动平均线（简单平均）
-  EXPMA12/26       指数移动平均（EMA）
-  BOLL（上轨/中轨/下轨）  布林带，N=20，sigma=2
-  MACD（DIF/DEA/MACD柱） MACD指标，参数 12/26/9
-  KDJ（K/D/J）     随机指标，N=9，M1=M2=3
-  RSI6/12/24       相对强弱指数，N=6/12/24
-  ATR14/ATR14_PCT  真实波动幅度，N=14
-  WR10/WR6         威廉指标，N=10/6
-  CCI14            商品通道指数，N=14
-  BIAS6/12/24      乖离率，N=6/12/24
-  ROC6/12          变化率，N=6/12
-  PSY12            心理线，N=12
-  VMA5/10/20       量能均线，N=5/10/20
-  OBV              能量潮
-  DMA/DDMA         差动移动平均（MA10-MA20）及10日均线
-  TRIX12/TRMA      三重指数平滑及9日信号线
-  PDI/MDI/ADX      趋向指标，N=14
-  STDDEV10/20      价格总体标准差
-  AR/BR            人气指标，N=26
+使用 pandas + numpy 向量化计算，替代原有纯 Python 循环实现。
+不依赖 pandas-ta（Python 3.9 无兼容版本），所有指标均自行实现。
 
-返回格式：{trade_date: {"MA5": v, "MA10": v, ..., "K": v, "close": v, ...}}
+支持的指标（参数固定）：
+  MA5/10/20/30/60     移动平均线
+  EXPMA12/26          指数移动平均（EMA）
+  BOLL: UPPER/MID/LOWER  布林带，N=20，总体标准差
+  MACD: DIF/DEA/MACD柱  参数 12/26/9
+  KDJ: K/D/J          N=9，中国惯例（K/D 初始值=50，权重 1/3）
+  RSI6/12/24          Wilder 平滑
+  ATR14/ATR14_PCT     真实波动幅度（Wilder 平滑）
+  WR10/WR6            威廉指标（-100~0）
+  CCI14               商品通道指数
+  BIAS6/12/24         乖离率
+  ROC6/12             变化率
+  PSY12               心理线
+  VMA5/10/20          量能均线
+  OBV                 能量潮
+  DMA/DDMA            差动移动平均
+  TRIX12/TRMA         三重指数平滑
+  PDI/MDI/ADX         趋向指标，N=14
+  STDDEV10/20         价格总体标准差（ddof=0）
+  AR/BR               人气指标，N=26
+  VWAP                20日成交量加权均价（新增）
+  MFI14               资金流量指数，N=14（新增）
+  StochRSI_K/D        随机相对强弱指数（新增）
+
+返回格式：{trade_date: {"MA5": v, ..., "close": v, ...}}
 """
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, List, Optional, Sequence
+from typing import Sequence
 
-
-# ---------- 原始数据行（只需 OHLCV）----------
-class _Bar:
-    """内部用途：统一 BarDaily ORM 对象和自定义对象的接口。"""
-    __slots__ = ("trade_date", "open", "high", "low", "close", "volume", "turnover_rate")
-
-    def __init__(self, trade_date: date, open_: float, high: float, low: float,
-                 close: float, volume: float, turnover_rate: Optional[float]):
-        self.trade_date = trade_date
-        self.open = open_
-        self.high = high
-        self.low = low
-        self.close = close
-        self.volume = volume
-        self.turnover_rate = turnover_rate if turnover_rate is not None else 0.0
+import numpy as np
+import pandas as pd
 
 
 def compute_indicators(
-    bars: Sequence,  # list[BarDaily] ORM 对象或 _Bar
+    bars: Sequence,
     start_date: date | None = None,
 ) -> dict[date, dict[str, float]]:
     """计算全部内置指标并返回按日期索引的字典。
 
     Args:
-        bars: 按 trade_date 升序的 K 线序列。
-              可包含冷启动数据（比 start_date 更早的数据），用于计算需要历史窗口的指标（如 MA60 需要 60 根）。
+        bars:       按 trade_date 升序的 K 线序列（BarDaily ORM 对象）。
+                    可含冷启动数据（比 start_date 更早），用于初始化需要历史窗口的指标。
         start_date: 只返回 >= start_date 的结果；None 则返回全部。
 
     Returns:
         {trade_date: {"MA5": v, ..., "close": v, ...}}
-        某些指标在历史不足时不会出现（如前 N-1 根没有 MA_N）。
+        历史不足时不输出该 key（如前 N-1 根没有 MA_N）。
     """
-    n = len(bars)
-    if n == 0:
+    if not bars:
         return {}
 
-    # 提取各 OHLCV 字段为纯 float 列表，方便后续统一计算
-    dates = [b.trade_date for b in bars]
-    closes = [float(b.close) for b in bars]
-    highs  = [float(b.high)  for b in bars]
-    lows   = [float(b.low)   for b in bars]
-    opens  = [float(b.open)  for b in bars]
-    vols   = [float(b.volume) for b in bars]
-    turns  = [float(b.turnover_rate) if hasattr(b, "turnover_rate") and b.turnover_rate is not None else 0.0 for b in bars]
+    n = len(bars)
 
-    result: dict[date, dict[str, float]] = {}
+    # ---- 构建 DataFrame ----
+    df = pd.DataFrame({
+        "close":         [float(b.close)  for b in bars],
+        "open":          [float(b.open)   for b in bars],
+        "high":          [float(b.high)   for b in bars],
+        "low":           [float(b.low)    for b in bars],
+        "volume":        [float(b.volume) for b in bars],
+        "turnover_rate": [
+            float(b.turnover_rate)
+            if hasattr(b, "turnover_rate") and b.turnover_rate is not None
+            else 0.0
+            for b in bars
+        ],
+    }, index=[b.trade_date for b in bars])
 
-    # ---- MA（简单移动平均）----
-    # MA_N = 最近 N 天收盘价的算术平均；前 N-1 根不够计算，值为 None
-    ma_periods = [5, 10, 20, 30, 60]
-    ma_vals: Dict[int, List[Optional[float]]] = {}
-    for p in ma_periods:
-        arr: List[Optional[float]] = []
-        for i in range(n):
-            if i < p - 1:
-                arr.append(None)  # 数据不足，跳过
-            else:
-                arr.append(sum(closes[i - p + 1 : i + 1]) / p)
-        ma_vals[p] = arr
+    c = df["close"].values
+    h = df["high"].values
+    lo = df["low"].values
+    op = df["open"].values
+    v  = df["volume"].values
 
-    # ---- EXPMA / EMA（指数移动平均）----
-    # EMA 公式：EMA_i = alpha × price_i + (1 - alpha) × EMA_{i-1}
-    # alpha = 2/(N+1)；第一天初始值=当天收盘价
-    def _ema(src: list[float], period: int) -> list[float]:
-        alpha = 2.0 / (period + 1)
-        out: list[float] = []
-        for i, v in enumerate(src):
-            if i == 0:
-                out.append(v)
-            else:
-                out.append(alpha * v + (1 - alpha) * out[-1])
-        return out
+    # ================================================================
+    # 1. MA
+    # ================================================================
+    for p in [5, 10, 20, 30, 60]:
+        df[f"MA{p}"] = df["close"].rolling(p).mean()
 
-    expma12 = _ema(closes, 12)
-    expma26 = _ema(closes, 26)
+    # ================================================================
+    # 2. EXPMA — ewm(adjust=False) 与手写 alpha=2/(N+1) 完全等价
+    # ================================================================
+    df["EXPMA12"] = df["close"].ewm(span=12, adjust=False).mean()
+    df["EXPMA26"] = df["close"].ewm(span=26, adjust=False).mean()
 
-    # ---- BOLL（布林带）N=20, sigma=2 ----
-    # 中轨 MID = MA20；标准差 std = 最近 20 日总体标准差（除以 N）
-    boll_n = 20
-    boll_mid: List[Optional[float]] = []
-    boll_upper: List[Optional[float]] = []
-    boll_lower: List[Optional[float]] = []
-    for i in range(n):
-        if i < boll_n - 1:
-            boll_mid.append(None); boll_upper.append(None); boll_lower.append(None)
-        else:
-            sl = closes[i - boll_n + 1 : i + 1]
-            mid = sum(sl) / boll_n
-            std = (sum((x - mid) ** 2 for x in sl) / boll_n) ** 0.5
-            boll_mid.append(mid)
-            boll_upper.append(mid + 2 * std)
-            boll_lower.append(mid - 2 * std)
+    # ================================================================
+    # 3. BOLL — 总体标准差（ddof=0）
+    # ================================================================
+    boll_mid = df["close"].rolling(20).mean()
+    boll_std = df["close"].rolling(20).std(ddof=0)
+    df["MID"]   = boll_mid
+    df["UPPER"] = boll_mid + 2 * boll_std
+    df["LOWER"] = boll_mid - 2 * boll_std
 
-    # ---- MACD（指数平滑异同移动平均）参数 12/26/9 ----
-    # DIF = EMA12 - EMA26；DEA = DIF 的 9 日 EMA；MACD柱 = 2×(DIF-DEA)
-    ema12 = _ema(closes, 12)
-    ema26 = _ema(closes, 26)
-    dif = [a - b for a, b in zip(ema12, ema26)]
-    dea = _ema(dif, 9)
-    macd_bar = [2 * (d - e) for d, e in zip(dif, dea)]
+    # ================================================================
+    # 4. MACD — ewm 与手写 _ema 完全一致，MACD柱 = 2×(DIF-DEA)
+    # ================================================================
+    ema12 = df["close"].ewm(span=12, adjust=False).mean()
+    ema26 = df["close"].ewm(span=26, adjust=False).mean()
+    dif   = ema12 - ema26
+    dea   = dif.ewm(span=9, adjust=False).mean()
+    df["DIF"]    = dif
+    df["DEA"]    = dea
+    df["MACD柱"] = 2 * (dif - dea)
 
-    # ---- KDJ（随机指标）N=9, M1=3, M2=3 ----
-    # RSV = (收盘 - N日最低) / (N日最高 - N日最低) × 100
-    # K = 2/3×前K + 1/3×RSV；D = 2/3×前D + 1/3×K；J = 3K - 2D
+    # ================================================================
+    # 5. KDJ — 中国惯例（K/D 初始值=50，权重 1/3），必须循环
+    # ================================================================
     kdj_n = 9
-    k_vals: list[float] = []
-    d_vals: list[float] = []
-    j_vals: list[float] = []
-    for i in range(n):
-        lo = min(lows[max(0, i - kdj_n + 1) : i + 1])
-        hi = max(highs[max(0, i - kdj_n + 1) : i + 1])
-        rsv = (closes[i] - lo) / (hi - lo) * 100 if hi != lo else 50.0
-        prev_k = k_vals[-1] if k_vals else 50.0
-        prev_d = d_vals[-1] if d_vals else 50.0
-        k = prev_k * (2 / 3) + rsv * (1 / 3)
-        d = prev_d * (2 / 3) + k * (1 / 3)
-        j = 3 * k - 2 * d
-        k_vals.append(k); d_vals.append(d); j_vals.append(j)
+    lo9 = df["low"].rolling(kdj_n,  min_periods=1).min().values
+    hi9 = df["high"].rolling(kdj_n, min_periods=1).max().values
+    hl   = hi9 - lo9
+    rsv  = np.where(hl != 0, (c - lo9) / hl * 100, 50.0)
 
-    # ---- RSI（相对强弱指数）N=6/12/24 ----
-    # RSI = 100 - 100 / (1 + RS)，RS = N日内平均涨幅 / N日内平均跌幅
-    # 使用 Wilder 平滑：首根用简单平均，后续用指数平滑 alpha=1/N
-    def _rsi(closes_: list[float], period: int) -> list[Optional[float]]:
-        out: List[Optional[float]] = [None] * n
-        if n < period + 1:
-            return out
-        gains: list[float] = []
-        losses: list[float] = []
-        for i in range(1, n):
-            diff = closes_[i] - closes_[i - 1]
-            gains.append(max(diff, 0.0))
-            losses.append(max(-diff, 0.0))
+    k_arr = np.empty(n); d_arr = np.empty(n)
+    kp, dp = 50.0, 50.0
+    for i, rsv_i in enumerate(rsv):
+        k = kp * (2.0 / 3) + float(rsv_i) * (1.0 / 3)
+        d = dp * (2.0 / 3) + k * (1.0 / 3)
+        k_arr[i] = k; d_arr[i] = d
+        kp, dp = k, d
 
-        # 首个 RSI 用简单平均初始化
-        avg_gain = sum(gains[:period]) / period
-        avg_loss = sum(losses[:period]) / period
-        if avg_loss == 0:
-            out[period] = 100.0
-        else:
-            rs = avg_gain / avg_loss
-            out[period] = 100.0 - 100.0 / (1.0 + rs)
+    df["K"] = k_arr
+    df["D"] = d_arr
+    df["J"] = 3 * df["K"] - 2 * df["D"]
 
-        # 后续用 Wilder 指数平滑（alpha = 1/N）
-        for i in range(period + 1, n):
-            avg_gain = (avg_gain * (period - 1) + gains[i - 1]) / period
-            avg_loss = (avg_loss * (period - 1) + losses[i - 1]) / period
-            if avg_loss == 0:
-                out[i] = 100.0
-            else:
-                rs = avg_gain / avg_loss
-                out[i] = 100.0 - 100.0 / (1.0 + rs)
-        return out
+    # ================================================================
+    # 6. RSI — Wilder 平滑（SMA 初始化，与旧版一致）
+    # ================================================================
+    for period in [6, 12, 24]:
+        df[f"RSI{period}"] = _rsi_wilder_pd(df["close"], period)
 
-    rsi6  = _rsi(closes, 6)
-    rsi12 = _rsi(closes, 12)
-    rsi24 = _rsi(closes, 24)
+    # ================================================================
+    # 7. ATR — Wilder 平滑，首根用 SMA 初始化
+    # ================================================================
+    tr = _true_range(h, lo, c)
+    df["ATR14"] = _wilder_smooth_pd(pd.Series(tr, index=df.index), 14)
+    df["ATR14_PCT"] = (df["ATR14"] / df["close"] * 100).round(4)
 
-    # ---- ATR（真实波动幅度）N=14 ----
-    # True Range(i) = max(high-low, |high-prev_close|, |low-prev_close|)
-    # ATR14 = Wilder 平滑均值（首根用简单平均）
-    atr_period = 14
-    tr_vals: list[float] = []
-    for i in range(n):
-        hl = highs[i] - lows[i]
-        if i == 0:
-            tr_vals.append(hl)
-        else:
-            hpc = abs(highs[i] - closes[i - 1])
-            lpc = abs(lows[i] - closes[i - 1])
-            tr_vals.append(max(hl, hpc, lpc))
+    # ================================================================
+    # 8. WR — (N日最高 - 收盘) / (N日最高 - N日最低) × (-100)
+    # ================================================================
+    for period, key in [(10, "WR10"), (6, "WR6")]:
+        hi_n = df["high"].rolling(period).max()
+        lo_n = df["low"].rolling(period).min()
+        hl_n = hi_n - lo_n
+        df[key] = np.where(hl_n != 0, (hi_n - df["close"]) / hl_n * (-100.0), -50.0)
 
-    atr14: List[Optional[float]] = [None] * n
-    if n >= atr_period:
-        atr14[atr_period - 1] = sum(tr_vals[:atr_period]) / atr_period
-        for i in range(atr_period, n):
-            atr14[i] = (atr14[i - 1] * (atr_period - 1) + tr_vals[i]) / atr_period  # type: ignore[operator]
+    # ================================================================
+    # 9. CCI — TP 的均值偏差法
+    # ================================================================
+    df["CCI14"] = _cci_pd(df["high"], df["low"], df["close"], 14)
 
-    atr14_pct: List[Optional[float]] = [
-        round(v / closes[i] * 100.0, 4) if v is not None and closes[i] > 0 else None
-        for i, v in enumerate(atr14)
-    ]
+    # ================================================================
+    # 10. BIAS
+    # ================================================================
+    for p, key in [(6, "BIAS6"), (12, "BIAS12"), (24, "BIAS24")]:
+        ma = df["close"].rolling(p).mean()
+        df[key] = (df["close"] - ma) / ma * 100
 
-    # ---- WR（威廉指标）N=10/6 ----
-    # WR = (N日最高 - 收盘) / (N日最高 - N日最低) × (-100)
-    # 取值 -100~0；越接近 0 越超买，越接近 -100 越超卖
-    def _wr(period: int) -> list[Optional[float]]:
-        out: List[Optional[float]] = []
-        for i in range(n):
-            if i < period - 1:
-                out.append(None)
-            else:
-                hi = max(highs[i - period + 1 : i + 1])
-                lo = min(lows[i - period + 1 : i + 1])
-                if hi == lo:
-                    out.append(-50.0)
-                else:
-                    out.append((hi - closes[i]) / (hi - lo) * (-100.0))
-        return out
+    # ================================================================
+    # 11. ROC
+    # ================================================================
+    df["ROC6"]  = df["close"].pct_change(6)  * 100
+    df["ROC12"] = df["close"].pct_change(12) * 100
 
-    wr10 = _wr(10)
-    wr6  = _wr(6)
+    # ================================================================
+    # 12. PSY12
+    # ================================================================
+    df["PSY12"] = (df["close"].diff() > 0).astype(float).rolling(12).sum() / 12 * 100
 
-    # ---- CCI（商品通道指数）N=14 ----
-    # TP = (High+Low+Close)/3；CCI = (TP - SMA(TP,N)) / (0.015 × 平均绝对偏差)
-    cci_n = 14
-    tp = [(highs[i] + lows[i] + closes[i]) / 3.0 for i in range(n)]
-    cci14: List[Optional[float]] = []
-    for i in range(n):
-        if i < cci_n - 1:
-            cci14.append(None)
-        else:
-            sl = tp[i - cci_n + 1 : i + 1]
-            avg = sum(sl) / cci_n
-            md = sum(abs(x - avg) for x in sl) / cci_n
-            cci14.append((tp[i] - avg) / (0.015 * md) if md != 0 else 0.0)
+    # ================================================================
+    # 13. VMA
+    # ================================================================
+    for p in [5, 10, 20]:
+        df[f"VMA{p}"] = df["volume"].rolling(p).mean()
 
-    # ---- BIAS（乖离率）N=6/12/24 ----
-    # BIAS_N = (close - MA_N) / MA_N × 100
-    def _bias(period: int) -> List[Optional[float]]:
-        out_: List[Optional[float]] = []
-        for i in range(n):
-            if i < period - 1:
-                out_.append(None)
-            else:
-                avg = sum(closes[i - period + 1 : i + 1]) / period
-                out_.append((closes[i] - avg) / avg * 100.0 if avg != 0 else None)
-        return out_
+    # ================================================================
+    # 14. OBV — 首根加全量，后续按涨跌加减
+    # ================================================================
+    direction = np.sign(np.diff(c, prepend=c[0]))
+    direction[0] = 1.0
+    df["OBV"] = np.cumsum(direction * v)
 
-    bias6  = _bias(6)
-    bias12 = _bias(12)
-    bias24 = _bias(24)
+    # ================================================================
+    # 15. DMA / DDMA
+    # ================================================================
+    df["DMA"]  = df["MA10"] - df["MA20"]
+    df["DDMA"] = df["DMA"].rolling(10).mean()
 
-    # ---- ROC（变化率）N=6/12 ----
-    # ROC_N = (close - close[i-N]) / close[i-N] × 100
-    def _roc(period: int) -> List[Optional[float]]:
-        out_: List[Optional[float]] = []
-        for i in range(n):
-            if i < period:
-                out_.append(None)
-            else:
-                prev = closes[i - period]
-                out_.append((closes[i] - prev) / prev * 100.0 if prev != 0 else None)
-        return out_
+    # ================================================================
+    # 16. TRIX / TRMA — 三重 EMA 链
+    # ================================================================
+    ema1t = df["close"].ewm(span=12, adjust=False).mean()
+    ema2t = ema1t.ewm(span=12, adjust=False).mean()
+    ema3t = ema2t.ewm(span=12, adjust=False).mean()
+    df["TRIX12"] = ema3t.pct_change() * 100
+    df["TRMA"]   = df["TRIX12"].rolling(9).mean()
 
-    roc6  = _roc(6)
-    roc12 = _roc(12)
+    # ================================================================
+    # 17. DMI（PDI/MDI/ADX）
+    # ================================================================
+    _calc_dmi(df, h, lo, c, 14)
 
-    # ---- PSY（心理线）N=12 ----
-    # PSY = 近N日中收盘价上涨天数 / N × 100
-    psy_n = 12
-    psy12: List[Optional[float]] = []
-    for i in range(n):
-        if i < psy_n:
-            psy12.append(None)
-        else:
-            up = sum(1 for j in range(i - psy_n + 1, i + 1) if closes[j] > closes[j - 1])
-            psy12.append(up / psy_n * 100.0)
+    # ================================================================
+    # 18. STDDEV — 总体标准差（ddof=0）
+    # ================================================================
+    df["STDDEV10"] = df["close"].rolling(10).std(ddof=0)
+    df["STDDEV20"] = df["close"].rolling(20).std(ddof=0)
 
-    # ---- VOLS（量能均线）N=5/10/20 ----
-    def _vma(period: int) -> List[Optional[float]]:
-        out_: List[Optional[float]] = []
-        for i in range(n):
-            if i < period - 1:
-                out_.append(None)
-            else:
-                out_.append(sum(vols[i - period + 1 : i + 1]) / period)
-        return out_
-
-    vma5  = _vma(5)
-    vma10 = _vma(10)
-    vma20 = _vma(20)
-
-    # ---- OBV（能量潮）----
-    # OBV(0) = vol[0]；之后按涨跌加减成交量
-    obv: List[float] = [vols[0]]
-    for i in range(1, n):
-        if closes[i] > closes[i - 1]:
-            obv.append(obv[-1] + vols[i])
-        elif closes[i] < closes[i - 1]:
-            obv.append(obv[-1] - vols[i])
-        else:
-            obv.append(obv[-1])
-
-    # ---- DMA（差动移动平均）----
-    # DMA = MA10 - MA20；DDMA = DMA 的 10 日简单均线
-    dma_v: List[Optional[float]] = []
-    for i in range(n):
-        m10 = ma_vals[10][i]
-        m20 = ma_vals[20][i]
-        dma_v.append(m10 - m20 if m10 is not None and m20 is not None else None)
-
-    dma_ma_n = 10
-    ddma: List[Optional[float]] = []
-    for i in range(n):
-        win = [dma_v[j] for j in range(max(0, i - dma_ma_n + 1), i + 1) if dma_v[j] is not None]
-        ddma.append(sum(win) / len(win) if len(win) == dma_ma_n else None)
-
-    # ---- TRIX（三重指数平滑）N=12，信号线 N=9 ----
-    # EMA3 = EMA(EMA(EMA(close, N), N), N)
-    # TRIX = (EMA3[i] - EMA3[i-1]) / EMA3[i-1] × 100；TRMA = MA(TRIX, 9)
-    trix_n = 12
-    _ema1t = _ema(closes, trix_n)
-    _ema2t = _ema(_ema1t, trix_n)
-    _ema3t = _ema(_ema2t, trix_n)
-    trix12: List[Optional[float]] = [None]
-    for i in range(1, n):
-        pe3 = _ema3t[i - 1]
-        trix12.append((_ema3t[i] - pe3) / pe3 * 100.0 if pe3 != 0 else None)
-
-    trma_n = 9
-    trma: List[Optional[float]] = []
-    for i in range(n):
-        win = [trix12[j] for j in range(max(0, i - trma_n + 1), i + 1) if trix12[j] is not None]
-        trma.append(sum(win) / len(win) if len(win) == trma_n else None)
-
-    # ---- DMI（趋向指标）N=14 ----
-    # 计算 +DM/-DM/TR → Wilder 平滑 → +DI/-DI/DX → ADX
-    dmi_n = 14
-    pdm_arr: List[float] = [0.0]
-    mdm_arr: List[float] = [0.0]
-    tr_dmi:  List[float] = [float(highs[0] - lows[0])]
-    for i in range(1, n):
-        up_move = highs[i] - highs[i - 1]
-        dn_move = lows[i - 1] - lows[i]
-        pdm_arr.append(max(up_move, 0.0) if up_move > dn_move and up_move > 0 else 0.0)
-        mdm_arr.append(max(dn_move, 0.0) if dn_move > up_move and dn_move > 0 else 0.0)
-        tr_dmi.append(max(
-            highs[i] - lows[i],
-            abs(highs[i] - closes[i - 1]),
-            abs(lows[i] - closes[i - 1]),
-        ))
-
-    def _wilder(src: List[float], period: int) -> List[Optional[float]]:
-        out_: List[Optional[float]] = [None] * n
-        if n < period:
-            return out_
-        out_[period - 1] = float(sum(src[:period]))
-        for i in range(period, n):
-            out_[i] = out_[i - 1] * (period - 1) / period + src[i]  # type: ignore[operator]
-        return out_
-
-    spdm = _wilder(pdm_arr, dmi_n)
-    smdm = _wilder(mdm_arr, dmi_n)
-    str_w = _wilder(tr_dmi, dmi_n)
-
-    pdi: List[Optional[float]] = []
-    mdi: List[Optional[float]] = []
-    dx:  List[Optional[float]] = []
-    for i in range(n):
-        sp = spdm[i]; sm = smdm[i]; st = str_w[i]
-        if sp is None or sm is None or st is None or st == 0:
-            pdi.append(None); mdi.append(None); dx.append(None)
-        else:
-            p = 100.0 * sp / st
-            m = 100.0 * sm / st
-            pdi.append(p); mdi.append(m)
-            s = p + m
-            dx.append(100.0 * abs(p - m) / s if s != 0 else 0.0)
-
-    adx: List[Optional[float]] = [None] * n
-    first_dx = next((i for i, v in enumerate(dx) if v is not None), None)
-    if first_dx is not None:
-        buf: List[float] = []
-        init_end = -1
-        for i in range(first_dx, n):
-            if dx[i] is not None:
-                buf.append(dx[i])  # type: ignore[arg-type]
-                if len(buf) == dmi_n:
-                    init_end = i
-                    break
-        if init_end >= 0:
-            adx[init_end] = sum(buf) / dmi_n
-            for i in range(init_end + 1, n):
-                dv = dx[i]; pv = adx[i - 1]
-                if dv is not None and pv is not None:
-                    adx[i] = (pv * (dmi_n - 1) + dv) / dmi_n
-
-    # ---- STDDEV（价格总体标准差）N=10/20 ----
-    def _stddev(period: int) -> List[Optional[float]]:
-        out_: List[Optional[float]] = []
-        for i in range(n):
-            if i < period - 1:
-                out_.append(None)
-            else:
-                sl = closes[i - period + 1 : i + 1]
-                avg = sum(sl) / period
-                out_.append((sum((x - avg) ** 2 for x in sl) / period) ** 0.5)
-        return out_
-
-    stddev10 = _stddev(10)
-    stddev20 = _stddev(20)
-
-    # ---- ARBR（人气指标）N=26 ----
-    # AR = sum(high-open, N) / sum(open-low, N) × 100
-    # BR = sum(max(0,high-prev_close), N) / sum(max(0,prev_close-low), N) × 100
+    # ================================================================
+    # 19. AR / BR — 手写，pandas-ta 无内置
+    # ================================================================
     arbr_n = 26
-    ar_vals: List[Optional[float]] = []
-    br_vals: List[Optional[float]] = []
-    for i in range(n):
-        if i < arbr_n - 1:
-            ar_vals.append(None); br_vals.append(None)
-        else:
-            ho = sum(highs[j] - opens[j] for j in range(i - arbr_n + 1, i + 1))
-            ol = sum(opens[j] - lows[j]  for j in range(i - arbr_n + 1, i + 1))
-            ar_vals.append(ho / ol * 100.0 if ol != 0 else None)
-            hc = sum(max(0.0, highs[j] - closes[j - 1]) for j in range(i - arbr_n + 1, i + 1) if j > 0)
-            cl = sum(max(0.0, closes[j - 1] - lows[j])  for j in range(i - arbr_n + 1, i + 1) if j > 0)
-            br_vals.append(hc / cl * 100.0 if cl != 0 else (100.0 if hc > 0 else 0.0))
+    df["AR"] = (df["high"] - df["open"]).rolling(arbr_n).sum() / \
+               (df["open"]  - df["low"]).rolling(arbr_n).sum() * 100
 
-    # ---- 组装结果 ----
-    for i, d in enumerate(dates):
-        if start_date and d < start_date:
+    prev_c = df["close"].shift(1)
+    hc = np.maximum(0.0, (df["high"] - prev_c).fillna(0)).rolling(arbr_n).sum()
+    cl = np.maximum(0.0, (prev_c - df["low"]).fillna(0)).rolling(arbr_n).sum()
+    df["BR"] = np.where(cl != 0, hc / cl * 100, np.where(hc > 0, 100.0, 0.0))
+    df.loc[df.index[: arbr_n - 1], "BR"] = np.nan
+
+    # ================================================================
+    # 20. VWAP（20日成交量加权均价）— 新增
+    # ================================================================
+    typical = (df["high"] + df["low"] + df["close"]) / 3
+    vol_sum = df["volume"].rolling(20).sum()
+    df["VWAP"] = (typical * df["volume"]).rolling(20).sum() / vol_sum
+
+    # ================================================================
+    # 21. MFI14（资金流量指数）— 新增
+    # ================================================================
+    df["MFI14"] = _mfi_pd(df["high"], df["low"], df["close"], df["volume"], 14)
+
+    # ================================================================
+    # 22. StochRSI_K / StochRSI_D — 新增
+    # ================================================================
+    _calc_stochrsi(df, df["close"], rsi_len=14, stoch_len=14, k=3, d=3)
+
+    # ================================================================
+    # 组装结果字典
+    # ================================================================
+    result: dict[date, dict[str, float]] = {}
+    for trade_date, row in df.iterrows():
+        if start_date and trade_date < start_date:
             continue
-        row: dict[str, float] = {
-            "close":         closes[i],
-            "open":          opens[i],
-            "high":          highs[i],
-            "low":           lows[i],
-            "volume":        vols[i],
-            "turnover_rate": turns[i],
-            "EXPMA12":       expma12[i],
-            "EXPMA26":       expma26[i],
-            "DIF":           dif[i],
-            "DEA":           dea[i],
-            "MACD柱":        macd_bar[i],
-            "K":             k_vals[i],
-            "D":             d_vals[i],
-            "J":             j_vals[i],
-        }
-        # MA：数据不足的日期不加入字典
-        for p in ma_periods:
-            v = ma_vals[p][i]
-            if v is not None:
-                row[f"MA{p}"] = v
-        # BOLL：数据不足时三条线均不加入
-        if boll_mid[i] is not None:
-            row["MID"]   = boll_mid[i]    # type: ignore[assignment]
-            row["UPPER"] = boll_upper[i]  # type: ignore[assignment]
-            row["LOWER"] = boll_lower[i]  # type: ignore[assignment]
-        # RSI：数据不足时不加入
-        if rsi6[i] is not None:
-            row["RSI6"] = rsi6[i]   # type: ignore[assignment]
-        if rsi12[i] is not None:
-            row["RSI12"] = rsi12[i]  # type: ignore[assignment]
-        if rsi24[i] is not None:
-            row["RSI24"] = rsi24[i]  # type: ignore[assignment]
-        # ATR
-        if atr14[i] is not None:
-            row["ATR14"] = atr14[i]  # type: ignore[assignment]
-        if atr14_pct[i] is not None:
-            row["ATR14_PCT"] = atr14_pct[i]  # type: ignore[assignment]
-        # WR
-        if wr10[i] is not None:
-            row["WR10"] = wr10[i]  # type: ignore[assignment]
-        if wr6[i] is not None:
-            row["WR6"] = wr6[i]   # type: ignore[assignment]
-        # CCI
-        if cci14[i] is not None:
-            row["CCI14"] = cci14[i]  # type: ignore[assignment]
-        # BIAS
-        if bias6[i] is not None:
-            row["BIAS6"] = bias6[i]  # type: ignore[assignment]
-        if bias12[i] is not None:
-            row["BIAS12"] = bias12[i]  # type: ignore[assignment]
-        if bias24[i] is not None:
-            row["BIAS24"] = bias24[i]  # type: ignore[assignment]
-        # ROC
-        if roc6[i] is not None:
-            row["ROC6"] = roc6[i]  # type: ignore[assignment]
-        if roc12[i] is not None:
-            row["ROC12"] = roc12[i]  # type: ignore[assignment]
-        # PSY
-        if psy12[i] is not None:
-            row["PSY12"] = psy12[i]  # type: ignore[assignment]
-        # VOLS
-        if vma5[i] is not None:
-            row["VMA5"] = vma5[i]  # type: ignore[assignment]
-        if vma10[i] is not None:
-            row["VMA10"] = vma10[i]  # type: ignore[assignment]
-        if vma20[i] is not None:
-            row["VMA20"] = vma20[i]  # type: ignore[assignment]
-        # OBV
-        row["OBV"] = obv[i]
-        # DMA
-        if dma_v[i] is not None:
-            row["DMA"] = dma_v[i]  # type: ignore[assignment]
-        if ddma[i] is not None:
-            row["DDMA"] = ddma[i]  # type: ignore[assignment]
-        # TRIX
-        if trix12[i] is not None:
-            row["TRIX12"] = trix12[i]  # type: ignore[assignment]
-        if trma[i] is not None:
-            row["TRMA"] = trma[i]  # type: ignore[assignment]
-        # DMI
-        if pdi[i] is not None:
-            row["PDI"] = pdi[i]  # type: ignore[assignment]
-        if mdi[i] is not None:
-            row["MDI"] = mdi[i]  # type: ignore[assignment]
-        if adx[i] is not None:
-            row["ADX"] = adx[i]  # type: ignore[assignment]
-        # STDDEV
-        if stddev10[i] is not None:
-            row["STDDEV10"] = stddev10[i]  # type: ignore[assignment]
-        if stddev20[i] is not None:
-            row["STDDEV20"] = stddev20[i]  # type: ignore[assignment]
-        # ARBR
-        if ar_vals[i] is not None:
-            row["AR"] = ar_vals[i]  # type: ignore[assignment]
-        if br_vals[i] is not None:
-            row["BR"] = br_vals[i]  # type: ignore[assignment]
-        result[d] = row
+        row_dict: dict[str, float] = {}
+        for key, val in row.items():
+            if pd.notna(val):
+                row_dict[key] = float(val)
+        result[trade_date] = row_dict
 
     return result
+
+
+# ================================================================
+# 辅助函数
+# ================================================================
+
+def _rsi_wilder_pd(close: pd.Series, period: int) -> pd.Series:
+    """Wilder RSI：SMA 初始化，后续用 Wilder 指数平滑（与旧版手写一致）。"""
+    n = len(close)
+    out = np.full(n, np.nan)
+    if n < period + 1:
+        return pd.Series(out, index=close.index)
+
+    diff  = close.diff().values
+    gains  = np.where(diff > 0, diff, 0.0)
+    losses = np.where(diff < 0, -diff, 0.0)
+
+    avg_g = gains[1 : period + 1].mean()
+    avg_l = losses[1 : period + 1].mean()
+    out[period] = 100.0 - 100.0 / (1.0 + avg_g / avg_l) if avg_l != 0 else 100.0
+
+    for i in range(period + 1, n):
+        avg_g = (avg_g * (period - 1) + gains[i]) / period
+        avg_l = (avg_l * (period - 1) + losses[i]) / period
+        out[i] = 100.0 - 100.0 / (1.0 + avg_g / avg_l) if avg_l != 0 else 100.0
+
+    return pd.Series(out, index=close.index)
+
+
+def _true_range(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> np.ndarray:
+    hl  = highs - lows
+    hpc = np.abs(highs[1:] - closes[:-1])
+    lpc = np.abs(lows[1:]  - closes[:-1])
+    tr  = np.concatenate([[hl[0]], np.maximum(hl[1:], np.maximum(hpc, lpc))])
+    return tr
+
+
+def _wilder_smooth_pd(series: pd.Series, period: int) -> pd.Series:
+    """Wilder 平滑（首 period 根用 SMA 初始化）。"""
+    n = len(series)
+    out = np.full(n, np.nan)
+    if n < period:
+        return pd.Series(out, index=series.index)
+    vals = series.values
+    out[period - 1] = vals[:period].mean()
+    for i in range(period, n):
+        out[i] = (out[i - 1] * (period - 1) + vals[i]) / period
+    return pd.Series(out, index=series.index)
+
+
+def _cci_pd(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -> pd.Series:
+    tp  = (high + low + close) / 3.0
+    tp_mean = tp.rolling(period).mean()
+    tp_mad  = tp.rolling(period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    return (tp - tp_mean) / (0.015 * tp_mad)
+
+
+def _calc_dmi(df: pd.DataFrame, h: np.ndarray, lo: np.ndarray, c: np.ndarray, period: int) -> None:
+    """计算 ADX / PDI / MDI 并原地写入 df。"""
+    n = len(h)
+    up   = h[1:] - h[:-1]
+    dn   = lo[:-1] - lo[1:]
+    pdm  = np.where((up > dn) & (up > 0), up, 0.0)
+    mdm  = np.where((dn > up) & (dn > 0), dn, 0.0)
+    tr_  = _true_range(h, lo, c)[1:]
+
+    # Wilder 平滑（首 period 根用 SMA 初始化）
+    def _ws(arr: np.ndarray) -> np.ndarray:
+        m  = len(arr)
+        out = np.full(m, np.nan)
+        if m < period:
+            return out
+        out[period - 1] = arr[:period].sum()
+        for i in range(period, m):
+            out[i] = out[i - 1] * (period - 1) / period + arr[i]
+        return out
+
+    spdm = _ws(pdm); smdm = _ws(mdm); str_ = _ws(tr_)
+
+    pdi_a = np.where(str_ != 0, 100.0 * spdm / str_, np.nan)
+    mdi_a = np.where(str_ != 0, 100.0 * smdm / str_, np.nan)
+    pmdm  = pdi_a + mdi_a
+    dx_a  = np.where(pmdm != 0, 100.0 * np.abs(pdi_a - mdi_a) / pmdm, np.nan)
+
+    # ADX = Wilder 平滑的 DX，在 DX 开始有效后再初始化
+    adx_a = np.full(n - 1, np.nan)
+    first = next((i for i, v in enumerate(dx_a) if not np.isnan(v)), None)
+    if first is not None:
+        buf, init_end = [], -1
+        for i in range(first, n - 1):
+            if not np.isnan(dx_a[i]):
+                buf.append(dx_a[i])
+                if len(buf) == period:
+                    init_end = i; break
+        if init_end >= 0:
+            adx_a[init_end] = np.mean(buf)
+            for i in range(init_end + 1, n - 1):
+                if not np.isnan(dx_a[i]) and not np.isnan(adx_a[i - 1]):
+                    adx_a[i] = (adx_a[i - 1] * (period - 1) + dx_a[i]) / period
+
+    # 对齐到 df 长度（第 0 根无 prev，数组长度是 n-1）
+    df["PDI"] = pd.Series(np.concatenate([[np.nan], pdi_a]), index=df.index)
+    df["MDI"] = pd.Series(np.concatenate([[np.nan], mdi_a]), index=df.index)
+    df["ADX"] = pd.Series(np.concatenate([[np.nan], adx_a]), index=df.index)
+
+
+def _mfi_pd(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series,
+    period: int,
+) -> pd.Series:
+    """资金流量指数（MFI）。"""
+    tp  = (high + low + close) / 3.0
+    mf  = tp * volume
+    pos = np.where(tp.diff() > 0, mf, 0.0)
+    neg = np.where(tp.diff() < 0, mf, 0.0)
+    pos_sum = pd.Series(pos, index=close.index).rolling(period).sum()
+    neg_sum = pd.Series(neg, index=close.index).rolling(period).sum()
+    mfr = np.where(neg_sum != 0, pos_sum / neg_sum, 100.0)
+    return pd.Series(100.0 - 100.0 / (1.0 + mfr), index=close.index)
+
+
+def _calc_stochrsi(
+    df: pd.DataFrame,
+    close: pd.Series,
+    rsi_len: int = 14,
+    stoch_len: int = 14,
+    k: int = 3,
+    d: int = 3,
+) -> None:
+    """StochRSI_K / StochRSI_D，原地写入 df。"""
+    rsi = _rsi_wilder_pd(close, rsi_len)
+    lo_rsi = rsi.rolling(stoch_len).min()
+    hi_rsi = rsi.rolling(stoch_len).max()
+    hl     = hi_rsi - lo_rsi
+    stoch  = np.where(hl != 0, (rsi - lo_rsi) / hl * 100, 50.0)
+    stoch_s = pd.Series(stoch, index=close.index)
+    df["StochRSI_K"] = stoch_s.rolling(k).mean()
+    df["StochRSI_D"] = df["StochRSI_K"].rolling(d).mean()

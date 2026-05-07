@@ -346,8 +346,16 @@ def fetch_and_upsert_symbol(
         if not adj_map:
             adj_fetch_failed = True
         if df_daily is None or df_daily.empty:
-            w(f"no daily rows for {code} (Tushare and AKShare both empty)")
-            return 0, False
+            # AKShare 也失败 → 尝试 baostock（免费，无需 token，最后兜底）
+            from app.services.baostock_ingestion import fetch_stock_bars_baostock  # noqa: PLC0415
+            w(f"[BAOSTOCK_FALLBACK] trying baostock for {code}")
+            df_daily, turn_map, adj_map = fetch_stock_bars_baostock(code, s, e)
+            data_source = "baostock"
+            if not adj_map:
+                adj_fetch_failed = True
+            if df_daily is None or df_daily.empty:
+                w(f"no daily rows for {code} (Tushare, AKShare, baostock all empty)")
+                return 0, False
     else:
         # Tushare 成功：补拉换手率和复权因子
         df_basic = pro.daily_basic(ts_code=code, start_date=s, end_date=e, fields="ts_code,trade_date,turnover_rate")
