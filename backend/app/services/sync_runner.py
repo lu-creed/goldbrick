@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.config import get_backend_root, settings
 from app.database import SessionLocal
 from app.models import InstrumentMeta, Symbol, SyncJob, SyncRun
+from app.services.data_retention import prune_history_older_than
 from app.services.derivatives import daterange_start_default, recompute_consecutive_for_symbol
 from app.services.ingestion import (
     ensure_symbols_for_stock_meta,
@@ -35,6 +36,16 @@ from app.services.ingestion import (
     verify_tushare_token_for_sync,
 )
 from app.services.indicator_precompute import rebuild_indicator_pre_for_symbol
+
+
+def _enabled_adj_modes() -> tuple[str, ...]:
+    """读配置里启用的指标预算复权模式。默认只 qfq；hfq 按需开启。
+
+    磁盘救火期建议只开 qfq，预算数据直接减半。
+    """
+    raw = (getattr(settings, "indicator_pre_adj_modes", "qfq") or "qfq").strip()
+    modes = tuple(m.strip() for m in raw.split(",") if m.strip() in ("qfq", "hfq"))
+    return modes or ("qfq",)
 
 
 def _fmt_eta(seconds: float) -> str:
@@ -369,10 +380,10 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
                             adj_fail_count += 1
                         # 重算涨跌停连续天数（需要全量历史数据）
                         recompute_consecutive_for_symbol(db, sym.id)
-                        # 预计算内置指标缓存：qfq + hfq 双口径
-                        # - qfq：副图 / 选股 / 回测默认口径
-                        # - hfq：长期收益率对比（图表用到时命中缓存，避免内存现算）
-                        for adj_mode in ("qfq", "hfq"):
+                        # 预计算内置指标缓存：复权模式受配置 settings.indicator_pre_adj_modes 控制
+                        # - 默认仅 qfq（副图 / 选股 / 回测默认口径）
+                        # - 显式开 hfq 才会同时预算长期收益率对比口径（磁盘代价约翻倍）
+                        for adj_mode in _enabled_adj_modes():
                             try:
                                 n_pre = rebuild_indicator_pre_for_symbol(db, sym.id, adj_mode)
                                 if n_pre:
@@ -393,6 +404,15 @@ def run_full_sync(trigger: str, existing_run_id: Optional[int] = None) -> SyncRu
                 # synced_codes=None 表示全市场同步，DAV 更新覆盖所有用户的所有股票
                 _sync_fundamentals_after_run(db, fp, synced_codes=None)
                 fp.write(f"done total_rows_touched~={total} ok={ok_count} fail={fail_count} adj_fail={adj_fail_count}\n")
+                # 磁盘瘦身：同步结束后顺手删 N 年外的历史数据（不 VACUUM，VACUUM 放 cron 脚本）
+                retention_years = int(getattr(settings, "history_retention_years", 0) or 0)
+                if retention_years > 0:
+                    try:
+                        pruned = prune_history_older_than(db, retention_years)
+                        fp.write(f"retention prune (years={retention_years}): {pruned}\n")
+                    except Exception as ex_prune:  # noqa: BLE001
+                        fp.write(f"WARN retention prune failed: {ex_prune}\n")
+                fp.flush()
 
         _commit_run_finish(
             db,
