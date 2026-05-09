@@ -81,7 +81,7 @@ export default function KlinePage() {
   // error：错误信息（非 null 时显示错误提示条）
   const [error, setError] = useState<string | null>(null);
   const isMobile = useIsMobile();
-  const chartHeight = isMobile ? 360 : 520;
+  const chartHeight = isMobile ? 420 : 620;
 
   // 主图指标参数
   const [mainIndicator, setMainIndicator] = useState<MainIndicator>("none");

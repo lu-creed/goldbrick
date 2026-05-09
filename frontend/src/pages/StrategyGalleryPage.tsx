@@ -101,7 +101,7 @@ export default function StrategyGalleryPage() {
       <div>
         <Title level={3} style={{ margin: 0 }}>策略广场</Title>
         <Paragraph type="secondary" style={{ margin: "4px 0 0 0" }}>
-          12 个开箱即用的策略,不用懂 DSL 就能开始。点「用这个策略」→ 到回测页确认时间和资金 → 一键回测。
+          12 个开箱即用的策略，选一个点「用这个策略」，填好时间和资金就能跑回测。
         </Paragraph>
       </div>
 
@@ -258,7 +258,7 @@ function StrategyCard({
         </Paragraph>
 
         {/* 参考回测数据 */}
-        <Row gutter={4} style={{ background: "#fafafa", borderRadius: 4, padding: "8px 4px" }}>
+        <Row gutter={4} style={{ borderRadius: 4, padding: "8px 4px", border: "1px solid #f0f0f0" }}>
           <Col span={8} style={{ textAlign: "center" }}>
             <Text type="secondary" style={{ fontSize: 11 }}>总收益</Text>
             <div>

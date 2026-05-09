@@ -2,6 +2,7 @@ import {
   Alert,
   Button,
   Card,
+  Modal,
   Popconfirm,
   Progress,
   Space,
@@ -16,6 +17,7 @@ import {
   type SyncRun,
   cancelSyncRun,
   deleteSyncRun,
+  fetchSyncRunLog,
   fetchSyncRuns,
   getApiErrorMessage,
   pauseSyncRun,
@@ -27,6 +29,12 @@ export default function SyncLogsPage() {
   const [runs, setRuns] = useState<SyncRun[]>([]);
   const [loading, setLoading] = useState(false);
   const [runActionId, setRunActionId] = useState<number | null>(null);
+  const [logModal, setLogModal] = useState<{ open: boolean; content: string; runId: number | null }>({
+    open: false,
+    content: "",
+    runId: null,
+  });
+  const [logLoading, setLogLoading] = useState(false);
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = Boolean(opts?.silent);
@@ -116,6 +124,20 @@ export default function SyncLogsPage() {
       message.error(getApiErrorMessage(e));
     } finally {
       setRunActionId(null);
+    }
+  };
+
+  const onOpenLog = async (runId: number) => {
+    setLogModal({ open: true, content: "", runId });
+    setLogLoading(true);
+    try {
+      const text = await fetchSyncRunLog(runId);
+      setLogModal({ open: true, content: text, runId });
+    } catch (e) {
+      message.error(getApiErrorMessage(e));
+      setLogModal({ open: false, content: "", runId: null });
+    } finally {
+      setLogLoading(false);
     }
   };
 
@@ -234,9 +256,9 @@ export default function SyncLogsPage() {
       ellipsis: true,
       render: (_: string | null, record) =>
         record.log_path ? (
-          <a href={`/api/sync/runs/${record.id}/log`} target="_blank" rel="noreferrer">
+          <Button type="link" size="small" style={{ padding: 0 }} onClick={() => void onOpenLog(record.id)}>
             打开日志
-          </a>
+          </Button>
         ) : (
           "-"
         ),
@@ -272,6 +294,35 @@ export default function SyncLogsPage() {
           pagination={{ pageSize: 15 }}
         />
       </Card>
+      <Modal
+        title={`同步日志 #${logModal.runId}`}
+        open={logModal.open}
+        onCancel={() => setLogModal({ open: false, content: "", runId: null })}
+        footer={null}
+        width={900}
+        styles={{ body: { padding: 0 } }}
+      >
+        {logLoading ? (
+          <div style={{ padding: 24, textAlign: "center" }}>加载中…</div>
+        ) : (
+          <pre
+            style={{
+              margin: 0,
+              padding: 16,
+              maxHeight: 600,
+              overflow: "auto",
+              fontSize: 12,
+              lineHeight: 1.6,
+              background: "#1e1e1e",
+              color: "#d4d4d4",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+            }}
+          >
+            {logModal.content || "（日志为空）"}
+          </pre>
+        )}
+      </Modal>
     </Space>
   );
 }

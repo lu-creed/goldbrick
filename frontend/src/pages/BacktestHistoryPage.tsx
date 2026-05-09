@@ -1237,7 +1237,7 @@ export default function BacktestHistoryPage() {
   ];
 
   return (
-    <Space direction="vertical" size="large" style={{ width: "100%", maxWidth: 1400 }}>
+    <Space direction="vertical" size="large" style={{ width: "100%" }}>
       <div>
         <Title level={4} style={{ margin: 0 }}>回测历史记录</Title>
         <Paragraph type="secondary" style={{ margin: "4px 0 0" }}>

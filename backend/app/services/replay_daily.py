@@ -46,7 +46,14 @@ _IPO_WINDOW_NATURAL_DAYS = 15
 
 
 def _max_bar_date(db: Session) -> Optional[date]:
-    r = db.execute(text("SELECT MAX(trade_date) AS mx FROM bars_daily")).scalar()
+    # 只看个股数据，避免指数和个股同步周期不一致导致取到无个股数据的日期
+    r = db.execute(text("""
+        SELECT MAX(b.trade_date) AS mx
+        FROM bars_daily b
+        JOIN symbols s ON s.id = b.symbol_id
+        JOIN instrument_meta m ON m.ts_code = s.ts_code
+        WHERE m.asset_type = 'stock'
+    """)).scalar()
     return _coerce_date(r)
 
 

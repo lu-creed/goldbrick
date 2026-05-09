@@ -9,18 +9,27 @@ import {
   DeleteOutlined,
   EditOutlined,
   ExclamationCircleOutlined,
+  MinusCircleOutlined,
   PlusOutlined,
+  RobotOutlined,
+  SyncOutlined,
 } from "@ant-design/icons";
 import {
+  Alert,
   AutoComplete,
   Button,
+  Col,
+  Divider,
   Form,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
   Radio,
+  Row,
+  Select,
   Space,
+  Switch,
   Table,
   Tag,
   Tabs,
@@ -32,11 +41,14 @@ import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
-  DavSearchItem,
-  DavStockIn,
-  DavStockOut,
-  DavStockPatch,
+  type AutoClassifyRule,
+  type DavSearchItem,
+  type DavStockIn,
+  type DavStockOut,
+  type DavStockPatch,
   addDavStock,
+  autoClassifyDavStocks,
+  fetchDavAutoPayoutRatio,
   fetchDavStocks,
   removeDavStock,
   searchDavStocks,
@@ -73,7 +85,7 @@ interface StockFormValues {
 
 interface StockModalProps {
   open: boolean;
-  editing: DavStockOut | null;   // null = 添加模式
+  editing: DavStockOut | null;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -81,9 +93,9 @@ interface StockModalProps {
 function StockModal({ open, editing, onClose, onSaved }: StockModalProps) {
   const [form] = Form.useForm<StockFormValues>();
   const [saving, setSaving] = useState(false);
+  const [autoFetching, setAutoFetching] = useState(false);
   const [searchOpts, setSearchOpts] = useState<{ value: string; label: string }[]>([]);
 
-  // 编辑模式：填充已有数据
   useEffect(() => {
     if (open) {
       if (editing) {
@@ -112,6 +124,34 @@ function StockModal({ open, editing, onClose, onSaved }: StockModalProps) {
       setSearchOpts([]);
     }
   }, []);
+
+  const handleAutoFetch = async () => {
+    const tsCode = editing?.ts_code ?? (form.getFieldValue("ts_code") as string | undefined);
+    if (!tsCode) {
+      message.warning("请先选择股票代码");
+      return;
+    }
+    setAutoFetching(true);
+    try {
+      const result = await fetchDavAutoPayoutRatio(tsCode);
+      if (result.payout_ratio == null && result.eps == null) {
+        message.warning("未找到分红数据，请手动填写");
+        return;
+      }
+      const updates: Partial<StockFormValues> = {};
+      if (result.payout_ratio != null) updates.manual_payout_ratio = parseFloat(result.payout_ratio.toFixed(2));
+      if (result.eps != null) updates.manual_eps = parseFloat(result.eps.toFixed(4));
+      form.setFieldsValue(updates);
+      message.success(
+        `已填入：派息率 ${result.payout_ratio != null ? result.payout_ratio.toFixed(2) + "%" : "无"}`
+        + `，EPS ${result.eps != null ? "¥" + result.eps.toFixed(4) : "无"}`,
+      );
+    } catch {
+      message.error("自动获取失败，请手动填写");
+    } finally {
+      setAutoFetching(false);
+    }
+  };
 
   const handleOk = async () => {
     let vals: StockFormValues;
@@ -179,6 +219,21 @@ function StockModal({ open, editing, onClose, onSaved }: StockModalProps) {
             ))}
           </Radio.Group>
         </Form.Item>
+
+        <div style={{ marginBottom: 12 }}>
+          <Button
+            icon={<SyncOutlined />}
+            loading={autoFetching}
+            onClick={handleAutoFetch}
+            size="small"
+          >
+            自动获取派息率和 EPS
+          </Button>
+          <Text type="secondary" style={{ fontSize: 11, marginLeft: 8 }}>
+            从 AKShare 拉取分红历史，约 1-5 秒
+          </Text>
+        </div>
+
         <Form.Item
           name="manual_payout_ratio"
           label="近两年平均派息率 %"
@@ -205,6 +260,160 @@ function StockModal({ open, editing, onClose, onSaved }: StockModalProps) {
           <Input.TextArea rows={2} placeholder="行业基准、大股东诉求、调整依据等" />
         </Form.Item>
       </Form>
+    </Modal>
+  );
+}
+
+// ── 自动分类弹窗 ─────────────────────────────────────────────────────────────
+
+interface AutoClassifyModalProps {
+  open: boolean;
+  onClose: () => void;
+  onDone: () => void;
+}
+
+const DEFAULT_RULES: AutoClassifyRule[] = [
+  { yield_min: 5, pe_max: 20, target_class: "A" },
+  { yield_min: 3, target_class: "B" },
+  { pe_max: 30, target_class: "C" },
+  { target_class: "D" },
+];
+
+function AutoClassifyModal({ open, onClose, onDone }: AutoClassifyModalProps) {
+  const [rules, setRules] = useState<AutoClassifyRule[]>(DEFAULT_RULES);
+  const [overwrite, setOverwrite] = useState(false);
+  const [classifying, setClassifying] = useState(false);
+  const [result, setResult] = useState<{ classified: number; skipped: number } | null>(null);
+
+  useEffect(() => {
+    if (open) { setRules(DEFAULT_RULES); setOverwrite(false); setResult(null); }
+  }, [open]);
+
+  const updateRule = (idx: number, field: keyof AutoClassifyRule, value: unknown) => {
+    setRules(prev => prev.map((r, i) => i === idx ? { ...r, [field]: value } : r));
+  };
+
+  const addRule = () => setRules(prev => [...prev, { target_class: "D" as const }]);
+  const removeRule = (idx: number) => setRules(prev => prev.filter((_, i) => i !== idx));
+
+  const handleRun = async () => {
+    if (rules.length === 0) { message.warning("请至少添加一条规则"); return; }
+    setClassifying(true);
+    try {
+      const res = await autoClassifyDavStocks(rules, overwrite);
+      setResult({ classified: res.classified, skipped: res.skipped });
+      onDone();
+    } catch {
+      message.error("自动分类失败");
+    } finally {
+      setClassifying(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="自动分类"
+      open={open}
+      onCancel={onClose}
+      footer={[
+        <Button key="cancel" onClick={onClose}>取消</Button>,
+        <Button key="run" type="primary" loading={classifying} onClick={handleRun} icon={<RobotOutlined />}>
+          开始分类
+        </Button>,
+      ]}
+      width={600}
+      destroyOnClose
+    >
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        <Alert
+          type="info"
+          showIcon
+          message="规则按顺序从上到下匹配，第一条命中的规则生效。条件为空表示「不限」。"
+        />
+
+        {rules.map((rule, idx) => (
+          <div key={idx} style={{ padding: "10px 12px", border: "1px solid #f0f0f0", borderRadius: 8 }}>
+            <Row gutter={8} align="middle">
+              <Col flex="none">
+                <Text type="secondary" style={{ fontSize: 12 }}>规则 {idx + 1}</Text>
+              </Col>
+              <Col flex="auto">
+                <Row gutter={6} align="middle" wrap>
+                  <Col>
+                    <Text style={{ fontSize: 12 }}>股息率 ≥</Text>
+                    <InputNumber
+                      size="small"
+                      min={0}
+                      max={100}
+                      precision={1}
+                      value={rule.yield_min ?? null}
+                      onChange={v => updateRule(idx, "yield_min", v ?? undefined)}
+                      placeholder="不限"
+                      style={{ width: 72, marginLeft: 4 }}
+                      addonAfter="%"
+                    />
+                  </Col>
+                  <Col>
+                    <Text style={{ fontSize: 12, marginLeft: 4 }}>且 PE ≤</Text>
+                    <InputNumber
+                      size="small"
+                      min={0}
+                      precision={0}
+                      value={rule.pe_max ?? null}
+                      onChange={v => updateRule(idx, "pe_max", v ?? undefined)}
+                      placeholder="不限"
+                      style={{ width: 72, marginLeft: 4 }}
+                    />
+                  </Col>
+                  <Col>
+                    <Text style={{ fontSize: 12, marginLeft: 4 }}>→ 分为</Text>
+                    <Select
+                      size="small"
+                      value={rule.target_class}
+                      onChange={v => updateRule(idx, "target_class", v)}
+                      style={{ width: 70, marginLeft: 4 }}
+                      options={["A", "B", "C", "D"].map(c => ({ value: c, label: `${c} 类` }))}
+                    />
+                  </Col>
+                </Row>
+              </Col>
+              <Col flex="none">
+                <Button
+                  size="small"
+                  type="text"
+                  danger
+                  icon={<MinusCircleOutlined />}
+                  onClick={() => removeRule(idx)}
+                  disabled={rules.length <= 1}
+                />
+              </Col>
+            </Row>
+          </div>
+        ))}
+
+        <Button size="small" icon={<PlusOutlined />} onClick={addRule}>添加规则</Button>
+
+        <Divider style={{ margin: "8px 0" }} />
+
+        <Row align="middle" gutter={8}>
+          <Col>
+            <Switch size="small" checked={overwrite} onChange={setOverwrite} />
+          </Col>
+          <Col>
+            <Text style={{ fontSize: 13 }}>覆盖已有分类</Text>
+            <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+              {overwrite ? "所有股票都会重新分类" : "仅对「未分类」股票生效"}
+            </Text>
+          </Col>
+        </Row>
+
+        {result && (
+          <Alert
+            type="success"
+            message={`分类完成：${result.classified} 只已分类，${result.skipped} 只已跳过`}
+          />
+        )}
+      </Space>
     </Modal>
   );
 }
@@ -365,6 +574,7 @@ export default function DavPage() {
   const [tab, setTab] = useState("all");
   const [modalOpen, setModalOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<DavStockOut | null>(null);
+  const [classifyOpen, setClassifyOpen] = useState(false);
   const isMobile = useIsMobile();
 
   const load = useCallback(async () => {
@@ -410,8 +620,7 @@ export default function DavPage() {
   });
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: isMobile ? "0 4px" : 0 }}>
-      {/* 页头 */}
+    <div style={{ width: "100%", padding: isMobile ? "0 4px" : 0 }}>
       <div style={{ marginBottom: 16, display: "flex", alignItems: "baseline", gap: 12 }}>
         <Title level={4} style={{ margin: 0 }}>大V看板</Title>
         <Text type="secondary" style={{ fontSize: 12 }}>
@@ -419,14 +628,12 @@ export default function DavPage() {
         </Text>
       </div>
 
-      {/* 分类说明 */}
       <div style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
         {(["A", "B", "C", "D"] as DavClass[]).map((c) => (
           <Tag key={c} color={CLASS_COLOR[c]} style={{ fontSize: 12 }}>{CLASS_DESC[c]}</Tag>
         ))}
       </div>
 
-      {/* 操作栏 */}
       <div style={{ marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <Tabs
           items={TAB_ITEMS}
@@ -436,13 +643,15 @@ export default function DavPage() {
           size="small"
         />
         <Space>
+          <Button icon={<RobotOutlined />} onClick={() => setClassifyOpen(true)}>
+            自动分类
+          </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
             添加股票
           </Button>
         </Space>
       </div>
 
-      {/* 数据表 */}
       <Table<DavStockOut>
         rowKey="ts_code"
         dataSource={filtered}
@@ -453,19 +662,23 @@ export default function DavPage() {
         locale={{ emptyText: tab === "all" ? "看板暂无股票，点击「添加股票」开始" : `暂无 ${tab} 类股票` }}
       />
 
-      {/* 底部提示 */}
       <div style={{ marginTop: 12 }}>
         <Text type="secondary" style={{ fontSize: 11 }}>
           预期股息率 = 派息率% × 预测EPS ÷ 当前价 × 100。当前价取本地日线最新收盘价，无行情时显示"无行情"。
         </Text>
       </div>
 
-      {/* 添加/编辑弹窗 */}
       <StockModal
         open={modalOpen}
         editing={editTarget}
         onClose={() => setModalOpen(false)}
         onSaved={load}
+      />
+
+      <AutoClassifyModal
+        open={classifyOpen}
+        onClose={() => setClassifyOpen(false)}
+        onDone={load}
       />
     </div>
   );

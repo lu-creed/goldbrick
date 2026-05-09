@@ -183,7 +183,7 @@ function MultiCondRowCard({
   const isDsl = ind?.kind === "dsl";
 
   return (
-    <Card size="small" style={{ background: "#fafafa" }}>
+    <Card size="small" style={{ border: "1px solid #e8e8e8" }}>
       <Space wrap align="baseline" size="middle">
         {showPrimary ? <Radio value={idx} style={{ marginRight: 0 }}>主排序</Radio> : null}
 
@@ -1667,7 +1667,7 @@ export default function BacktestPage() {
   const retColor = result ? pnlColor(result.total_return_pct) : undefined;
 
   return (
-    <Space direction="vertical" size="large" style={{ width: "100%", maxWidth: 1400, margin: "0 auto" }}>
+    <Space direction="vertical" size="large" style={{ width: "100%" }}>
       {/* 页头 */}
       <div>
         <Title level={4} style={{ margin: 0 }}>条件选股回测</Title>

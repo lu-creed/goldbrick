@@ -251,7 +251,7 @@ export default function SentimentPage() {
   const latestLabel = latest ? sentimentLabel(latest.sentiment_score) : null;
 
   return (
-    <Space direction="vertical" size="large" style={{ width: "100%", maxWidth: 1400, margin: "0 auto" }}>
+    <Space direction="vertical" size="large" style={{ width: "100%" }}>
       {/* 页头 */}
       <div>
         <Title level={4} style={{ margin: 0 }}>

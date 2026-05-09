@@ -822,7 +822,7 @@ export default function ScreeningPage() {
   // ── 渲染 ─────────────────────────────────────────────────
 
   return (
-    <Space direction="vertical" size="large" style={{ width: "100%", maxWidth: 1200 }}>
+    <Space direction="vertical" size="large" style={{ width: "100%" }}>
       <div>
         <Typography.Title level={4} style={{ margin: 0 }}>条件选股</Typography.Title>
         <Typography.Paragraph type="secondary" style={{ margin: "4px 0 0" }}>

@@ -395,6 +395,15 @@ export async function deleteSyncRun(runId: number) {
   await api.delete(`/sync/runs/${runId}`);
 }
 
+/** 获取同步日志文件内容（纯文本） */
+export async function fetchSyncRunLog(runId: number): Promise<string> {
+  const { data } = await api.get<string>(`/sync/runs/${runId}/log`, {
+    responseType: "text",
+    _skipLoginGate: true,
+  } as any);
+  return data;
+}
+
 /**
  * 请求取消某次同步
  * @param opts.force - true 时直接把状态改为 cancelled（用于卡死或进程重启后的清理）
@@ -848,7 +857,10 @@ export type DailyUniverseSort =
   | "close"
   | "volume"
   | "amount"
-  | "turnover_rate";
+  | "turnover_rate"
+  | "pe_ttm"
+  | "pb"
+  | "total_mv";
 
 /**
  * 个股列表的筛选参数（所有字段均可选，数值区间上下界填反时后端自动交换）
@@ -1234,6 +1246,35 @@ export async function updateDavStock(ts_code: string, body: DavStockPatch) {
 /** 从大V看板移除一只股票 */
 export async function removeDavStock(ts_code: string) {
   await api.delete(`/dav/stocks/${encodeURIComponent(ts_code)}`);
+}
+
+export type DavAutoPayoutOut = {
+  payout_ratio: number | null;
+  eps: number | null;
+};
+
+/** 实时从 AKShare 拉取个股派息率和 EPS（约 1-5 秒） */
+export async function fetchDavAutoPayoutRatio(ts_code: string): Promise<DavAutoPayoutOut> {
+  const { data } = await api.get<DavAutoPayoutOut>(`/dav/stocks/${encodeURIComponent(ts_code)}/auto-payout`);
+  return data;
+}
+
+export type AutoClassifyRule = {
+  yield_min?: number;
+  pe_max?: number;
+  target_class: "A" | "B" | "C" | "D";
+};
+
+export type AutoClassifyResult = {
+  classified: number;
+  skipped: number;
+  details: Array<{ ts_code: string; action: string; from?: string; to?: string; dav_class?: string; yield?: number | null; pe?: number | null }>;
+};
+
+/** 按规则批量自动分类看板股票 */
+export async function autoClassifyDavStocks(rules: AutoClassifyRule[], overwrite: boolean): Promise<AutoClassifyResult> {
+  const { data } = await api.post<AutoClassifyResult>("/dav/auto-classify", { rules, overwrite });
+  return data;
 }
 
 // ── 自选股池 ──────────────────────────────────────────────────────────────────

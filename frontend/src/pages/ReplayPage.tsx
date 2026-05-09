@@ -9,7 +9,7 @@
  *
  * 注意：期间复盘（多日趋势）暂未实现，按钮已禁用。
  */
-import { Card, Col, DatePicker, Row, Skeleton, Space, Statistic, Tabs, Typography, message, theme } from "antd";
+import { Card, Col, DatePicker, Divider, Row, Skeleton, Space, Statistic, Tabs, Typography, message, theme } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
 import * as echarts from "echarts";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -278,7 +278,7 @@ export default function ReplayPage() {
   };
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+    <div style={{ width: "100%" }}>
       <Typography.Title level={4} style={{ marginTop: 0 }}>
         股票复盘
       </Typography.Title>
@@ -308,13 +308,6 @@ export default function ReplayPage() {
                 <Text type="secondary">本地最新日线：{data.latest_bar_date}</Text>
               )}
             </Space>
-
-            {/* 当日统计说明 */}
-            {data?.universe_note && (
-              <Text type="secondary" style={{ display: "block", marginBottom: 16, fontSize: 12 }}>
-                统计范围：当日有行情记录的全部 A 股
-              </Text>
-            )}
 
             {/* 三大股指卡片：点击可跳转到该指数 K 线页 */}
             <Row gutter={[16, 16]}>
@@ -387,58 +380,32 @@ export default function ReplayPage() {
         )}
       </Card>
 
-      {/* ── 涨跌统计卡片 ────────────────────────────────────── */}
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={12}>
-          <Card title="涨跌家数" style={{ borderRadius: 12 }}>
-            {loading ? (
-              <Skeleton active paragraph={{ rows: 2 }} />
-            ) : (
-              <Space size="large" wrap>
-                {/* A 股配色：上涨红、下跌绿、平盘灰 */}
-                <Statistic title="上涨" value={data?.up_count ?? 0} valueStyle={{ color: RISE_COLOR }} />
-                <Statistic title="平盘" value={data?.flat_count ?? 0} valueStyle={{ color: FLAT_COLOR }} />
-                <Statistic title="下跌" value={data?.down_count ?? 0} valueStyle={{ color: FALL_COLOR }} />
-              </Space>
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card title="涨跌停家数" style={{ borderRadius: 12 }}>
-            {loading ? (
-              <Skeleton active paragraph={{ rows: 2 }} />
-            ) : (
-              <Space size="large" wrap>
-                <Statistic title="涨停" value={data?.limit_up_count ?? 0} valueStyle={{ color: RISE_COLOR }} />
-                <Statistic title="跌停" value={data?.limit_down_count ?? 0} valueStyle={{ color: FALL_COLOR }} />
-              </Space>
-            )}
-          </Card>
-        </Col>
-      </Row>
+      {/* ── 统计卡片（合并涨跌家数 + 涨跌停家数）──────────── */}
+      <Card style={{ borderRadius: 12 }}>
+        {loading ? (
+          <Skeleton active paragraph={{ rows: 2 }} />
+        ) : (
+          <Row justify="space-around" align="middle" wrap>
+            <Col><Statistic title="上涨" value={data?.up_count ?? 0} valueStyle={{ color: RISE_COLOR }} /></Col>
+            <Col><Statistic title="平盘" value={data?.flat_count ?? 0} valueStyle={{ color: FLAT_COLOR }} /></Col>
+            <Col><Statistic title="下跌" value={data?.down_count ?? 0} valueStyle={{ color: FALL_COLOR }} /></Col>
+            <Divider type="vertical" style={{ height: 48, margin: "0 8px" }} />
+            <Col><Statistic title="涨停" value={data?.limit_up_count ?? 0} valueStyle={{ color: RISE_COLOR }} /></Col>
+            <Col><Statistic title="跌停" value={data?.limit_down_count ?? 0} valueStyle={{ color: FALL_COLOR }} /></Col>
+          </Row>
+        )}
+      </Card>
 
-      {/* ── 涨跌幅分布直方图 ─────────────────────────────────── */}
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24}>
+      {/* ── 涨跌幅分布 + 换手率散点图（并排）──────────────── */}
+      <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
+        <Col xs={24} lg={12}>
           <Card title="涨跌幅分布" style={{ borderRadius: 12 }}>
-            {loading ? (
-              <Skeleton active paragraph={{ rows: 6 }} />
-            ) : (
-              /* bucketRef 指向的 div 就是 ECharts 的绘图容器 */
+            {loading ? <Skeleton active paragraph={{ rows: 6 }} /> : (
               <div ref={bucketRef} style={{ height: isMobile ? 240 : 320 }} />
             )}
           </Card>
         </Col>
-      </Row>
-
-      {/* ── 换手率-涨跌幅散点图 ──────────────────────────────── */}
-      {/*
-        X 轴：换手率，Y 轴：涨跌幅，颜色按涨跌分组
-        高换手且上涨的点集中在右上角，反映主力资金流向。
-        Y=0 处有分隔虚线，帮助区分涨跌区域。
-      */}
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24}>
+        <Col xs={24} lg={12}>
           <Card
             title="换手率 · 涨跌幅散点图"
             extra={
@@ -448,10 +415,8 @@ export default function ReplayPage() {
             }
             style={{ borderRadius: 12 }}
           >
-            {loading ? (
-              <Skeleton active paragraph={{ rows: 8 }} />
-            ) : (
-              <div ref={scatterRef} style={{ height: isMobile ? 300 : 400 }} />
+            {loading ? <Skeleton active paragraph={{ rows: 8 }} /> : (
+              <div ref={scatterRef} style={{ height: isMobile ? 300 : 320 }} />
             )}
           </Card>
         </Col>
