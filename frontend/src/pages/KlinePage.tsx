@@ -16,15 +16,18 @@ import { useSearchParams } from "react-router-dom";
 import {
   type AdjType,
   type BarPoint,
+  type FundamentalSnapshot,
   type Interval,
   type UserIndicatorOut,
   fetchBars,
   fetchCustomIndicatorSeries,
   fetchCustomIndicators,
+  fetchFundamentalSnapshot,
   fetchSymbols,
   getApiErrorMessage,
 } from "../api/client";
 import KlineChart, { type KlineChartHandle } from "../components/KlineChart";
+import StockFundamentalsPanel from "../components/StockFundamentalsPanel";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAuth } from "../hooks/useAuth";
 
@@ -82,6 +85,10 @@ export default function KlinePage() {
   const [error, setError] = useState<string | null>(null);
   const isMobile = useIsMobile();
   const chartHeight = isMobile ? 420 : 620;
+
+  // 财务快照
+  const [fundamentals, setFundamentals] = useState<FundamentalSnapshot | null>(null);
+  const [fundLoading, setFundLoading] = useState(false);
 
   // 主图指标参数
   const [mainIndicator, setMainIndicator] = useState<MainIndicator>("none");
@@ -264,6 +271,16 @@ export default function KlinePage() {
   useEffect(() => {
     void loadBars();
   }, [loadBars]);
+
+  // 标的切换时加载财务快照（独立于 K 线加载，不阻塞图表）
+  useEffect(() => {
+    if (!tsCode) { setFundamentals(null); return; }
+    setFundLoading(true);
+    fetchFundamentalSnapshot(tsCode)
+      .then((snap) => setFundamentals(snap))
+      .catch(() => setFundamentals(null))
+      .finally(() => setFundLoading(false));
+  }, [tsCode]);
 
   // 切换到非日 K 时，自动切换副图回「成交量」（自定义指标只支持日 K）
   useEffect(() => {
@@ -556,6 +573,7 @@ export default function KlinePage() {
           />
         </div>
       </Card>
+      <StockFundamentalsPanel snapshot={fundamentals} loading={fundLoading} />
     </Space>
   );
 }

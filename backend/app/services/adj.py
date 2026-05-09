@@ -18,9 +18,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
-
-from app.models import AdjFactorDaily
 
 # AdjType 是类型别名，限制复权参数只能是这三个字面量字符串
 AdjType = Literal["none", "qfq", "hfq"]
@@ -32,8 +31,15 @@ def build_adj_map(db: Session, symbol_id: int) -> dict[date, float]:
     复权因子由 Tushare 计算并存入 adj_factors_daily 表。
     因子值通常在 1.0 附近，每次分红/送股时会阶梯式跳变。
     """
-    rows = db.query(AdjFactorDaily).filter(AdjFactorDaily.symbol_id == symbol_id).all()
-    return {r.trade_date: float(r.adj_factor) for r in rows}
+    rows = db.execute(
+        text("SELECT trade_date, CAST(adj_factor AS REAL) FROM adj_factors_daily WHERE symbol_id = :sid"),
+        {"sid": symbol_id},
+    ).fetchall()
+    result: dict[date, float] = {}
+    for td_raw, af in rows:
+        td = td_raw if isinstance(td_raw, date) else date.fromisoformat(str(td_raw))
+        result[td] = af
+    return result
 
 
 def apply_adj(

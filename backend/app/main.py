@@ -29,6 +29,7 @@ from app.api.dav import router as dav_router
 from app.api.watchlist import router as watchlist_router
 from app.api.auto_update import router as auto_update_router
 from app.api.strategies import router as strategies_router
+from app.api.fundamentals import router as fundamentals_router
 from app.database import (
     Base,
     SessionLocal,
@@ -152,6 +153,7 @@ app.include_router(dav_router, prefix="/api")                  # 大V看板（AB
 app.include_router(watchlist_router, prefix="/api")            # 自选股池（轻量收藏）
 app.include_router(auto_update_router, prefix="/api")          # 管理：GitHub 自动更新状态/配置/日志
 app.include_router(strategies_router, prefix="/api")           # 多条件策略：CRUD（选股/回测共用）
+app.include_router(fundamentals_router, prefix="/api")         # 个股财务快照（K 线页财务面板）
 
 
 @app.get("/api/health")

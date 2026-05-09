@@ -194,20 +194,29 @@ export default function StrategyDrawer({ open, onClose, kind, onLoad }: Props) {
                 style={{
                   cursor: "pointer",
                   padding: "8px 10px",
-                  background: selectedId === item.id ? "#e6f4ff" : undefined,
+                  background: selectedId === item.id ? "#1677ff" : undefined,
                   borderRadius: 4,
+                  color: selectedId === item.id ? "#fff" : undefined,
                 }}
               >
                 <div style={{ width: "100%" }}>
                   <Space size={4} wrap>
-                    <Typography.Text strong>{item.display_name}</Typography.Text>
+                    <Typography.Text
+                      strong
+                      style={{ color: selectedId === item.id ? "#fff" : undefined }}
+                    >
+                      {item.display_name}
+                    </Typography.Text>
                     {item.is_system && <Tag color="default">预置</Tag>}
                   </Space>
                   {item.description && (
                     <Typography.Paragraph
-                      type="secondary"
                       ellipsis={{ rows: 2 }}
-                      style={{ margin: "2px 0 0 0", fontSize: 12 }}
+                      style={{
+                        margin: "2px 0 0 0",
+                        fontSize: 12,
+                        color: selectedId === item.id ? "rgba(255,255,255,0.75)" : undefined,
+                      }}
                     >
                       {item.description}
                     </Typography.Paragraph>
@@ -243,7 +252,9 @@ export default function StrategyDrawer({ open, onClose, kind, onLoad }: Props) {
                 <Typography.Text strong>策略逻辑</Typography.Text>
                 <pre
                   style={{
-                    background: "#fafafa",
+                    background: "#f0f0f0",
+                    border: "1px solid #d9d9d9",
+                    color: "#262626",
                     padding: 8,
                     borderRadius: 4,
                     fontSize: 11,

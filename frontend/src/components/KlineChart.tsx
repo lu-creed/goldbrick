@@ -145,6 +145,7 @@ const KlineChart = forwardRef<KlineChartHandle, KlineChartProps>(
         layout: {
           background: { type: ColorType.Solid, color: "#141414" },
           textColor: "#8c8c8c",
+          attributionLogo: false,
         },
         grid: {
           vertLines: { color: "#2d2d2d" },

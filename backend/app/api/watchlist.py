@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import WatchlistStock
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_user_optional
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
@@ -50,8 +50,10 @@ class WatchlistOut(BaseModel):
 # ── 接口实现 ────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=List[WatchlistOut])
-def list_watchlist(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """返回当前用户的全部自选股，按加入时间倒序。"""
+def list_watchlist(current_user=Depends(get_current_user_optional), db: Session = Depends(get_db)):
+    """返回当前用户的全部自选股，按加入时间倒序。未登录返回空列表。"""
+    if current_user is None:
+        return []
     rows = (
         db.query(WatchlistStock)
         .filter(WatchlistStock.user_id == current_user.id)

@@ -243,6 +243,78 @@ def fetch_and_upsert_full_market_fundamental(db, trade_date: date) -> dict:
     return {"upserted": upserted, "skipped": skipped, "error": None}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 3：个股年度财务指标（按需实时拉取，不入库）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_financial_analysis_indicator(ts_code: str) -> list[dict]:
+    """从 AKShare stock_financial_analysis_indicator 拉取个股近 5 年年度财务指标。
+
+    返回格式（列表，按年份升序）：
+        [{"period": "2023", "roe": 30.5, "gross_margin": 92.0,
+          "debt_ratio": 20.0, "revenue": 1500e8, "net_profit": 700e8}, ...]
+
+    失败或数据为空时返回空列表。
+    """
+    try:
+        import akshare as ak
+    except ImportError:
+        log.error("akshare 未安装")
+        return []
+
+    symbol = ts_code.split(".")[0]
+    try:
+        df = _ak_fetch_with_retry(
+            ak.stock_financial_analysis_indicator,
+            symbol=symbol,
+            indicator="按年度",
+        )
+    except Exception as ex:
+        log.warning("stock_financial_analysis_indicator(%s) 失败: %s", ts_code, ex)
+        return []
+
+    if df is None or df.empty:
+        return []
+
+    col_period = _find_col(df.columns, ["报告期", "年份", "period"])
+    col_roe = _find_col(df.columns, ["净资产收益率(加权)", "净资产收益率-加权", "净资产收益率"])
+    col_gm = _find_col(df.columns, ["销售毛利率"])
+    col_dr = _find_col(df.columns, ["资产负债率"])
+    col_rev = _find_col(df.columns, ["营业收入"])
+    col_np = _find_col(df.columns, ["净利润"])
+
+    if col_period is None:
+        log.warning("stock_financial_analysis_indicator(%s) 无报告期列, 列: %s", ts_code, list(df.columns)[:15])
+        return []
+
+    try:
+        df = df.sort_values(col_period, ascending=False).reset_index(drop=True)
+    except Exception:
+        pass
+
+    results = []
+    for _, row in df.head(5).iterrows():
+        period_raw = str(row.get(col_period, "")).strip()
+        # 只取年度报告（12-31 结尾 或 4 位年份）
+        if len(period_raw) >= 4:
+            year = period_raw[:4]
+        else:
+            continue
+        if period_raw and "-" in period_raw and not period_raw.endswith("-12-31"):
+            continue  # 跳过季报/半年报
+
+        results.append({
+            "period": year,
+            "roe": _safe_float(row.get(col_roe) if col_roe else None),
+            "gross_margin": _safe_float(row.get(col_gm) if col_gm else None),
+            "debt_ratio": _safe_float(row.get(col_dr) if col_dr else None),
+            "revenue": _safe_float(row.get(col_rev) if col_rev else None),
+            "net_profit": _safe_float(row.get(col_np) if col_np else None),
+        })
+
+    return list(reversed(results))  # 升序返回供图表使用
+
+
 def sync_dav_auto_fundamentals(db, ts_codes: list[str], log_fp=None) -> dict:
     """为指定 ts_code 列表更新 dav_stock_watch 中的 auto_payout_ratio / auto_eps。
 

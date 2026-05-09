@@ -24,8 +24,11 @@ import {
   resumeSyncRun,
 } from "../api/client";
 import { zebraRowClass } from "../constants/theme";
+import { useAuth } from "../hooks/useAuth";
 
 export default function SyncLogsPage() {
+  const { currentUser } = useAuth();
+  const isAdmin = Boolean(currentUser?.is_admin);
   const [runs, setRuns] = useState<SyncRun[]>([]);
   const [loading, setLoading] = useState(false);
   const [runActionId, setRunActionId] = useState<number | null>(null);
@@ -255,7 +258,7 @@ export default function SyncLogsPage() {
       dataIndex: "log_path",
       ellipsis: true,
       render: (_: string | null, record) =>
-        record.log_path ? (
+        isAdmin && record.log_path ? (
           <Button type="link" size="small" style={{ padding: 0 }} onClick={() => void onOpenLog(record.id)}>
             打开日志
           </Button>

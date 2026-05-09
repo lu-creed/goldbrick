@@ -85,7 +85,7 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 # 这份统计不需要秒级实时（K 线条数分钟级也不会有明显变化），加一层进程内 TTL 缓存。
 # 缓存键包含 limit 参数，不同 limit 互不干扰；失效通过 invalidate_data_center_cache() 在同步完成后调用。
 _DATA_CENTER_CACHE: dict[str, tuple[float, list]] = {}
-_DATA_CENTER_TTL = 60.0  # 秒
+_DATA_CENTER_TTL = 300.0  # 秒（同步完成后 invalidate 会主动清空，日常浏览无需频繁重算）
 
 
 def invalidate_data_center_cache() -> None:
@@ -478,9 +478,6 @@ def data_center(limit: int = 500, _admin=Depends(get_current_admin), db: Session
     - adj_factor_coverage_ratio: 复权因子覆盖率（adj_count / bar_count）
     - adj_factor_synced: 复权因子是否完整同步（coverage=100%）
     """
-    # 兼容迁移：若 instrument_meta 为空，先从 symbols 迁移一次
-    bootstrap_meta_from_symbols(db)
-
     lim = min(max(limit, 1), 2000)
     cache_key = f"lim={lim}"
     now = time.time()
@@ -488,6 +485,9 @@ def data_center(limit: int = 500, _admin=Depends(get_current_admin), db: Session
     if cached and now - cached[0] < _DATA_CENTER_TTL:
         # 缓存命中：避免对 bars_daily / adj_factors_daily 的全表聚合
         return cached[1]
+
+    # 缓存未命中才做：兼容迁移（instrument_meta 为空时从 symbols 迁移一次，正常情况 no-op）
+    bootstrap_meta_from_symbols(db)
     # 用子查询分别聚合 bars_daily / adj_factors_daily（各走 symbol_id 索引），
     # 再 JOIN 小结果集，比三表直连快数十倍（全市场 5000+ 只股时尤其明显）
     sql = text("""
@@ -575,10 +575,13 @@ def symbol_daily_bars(
     pg = max(1, page)
     ps = min(max(1, page_size), 200)
     rows = q.order_by(BarDaily.trade_date.desc()).offset((pg - 1) * ps).limit(ps).all()
-    # 预加载该股所有有复权因子的日期（用于打标签，避免 N+1）
+    # raw SQL 只拉日期列，不实例化 ORM 对象，减少对大表的开销
     adj_dates = {
         r[0]
-        for r in db.query(AdjFactorDaily.trade_date).filter(AdjFactorDaily.symbol_id == sym.id).all()
+        for r in db.execute(
+            text("SELECT trade_date FROM adj_factors_daily WHERE symbol_id = :sid"),
+            {"sid": sym.id},
+        ).fetchall()
         if r[0] is not None
     }
     items = [

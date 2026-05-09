@@ -19,13 +19,14 @@ from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.auth import get_current_user, get_current_user_optional
-from app.models import BarDaily, Symbol
+from app.models import Symbol
 from app.schemas import BarPoint, CustomIndicatorPoint, CustomIndicatorSeriesOut, Interval
-from app.services.adj import AdjType, apply_adj, build_adj_map, get_latest_factor
+from app.services.adj import AdjType, build_adj_map, get_latest_factor
 from app.services.aggregation import DailyRow, aggregate_bars
 from app.services.user_indicator_compute import custom_indicator_daily_points
 
@@ -68,34 +69,66 @@ def get_bars(
     latest_factor = 1.0
     if adj != "none":
         adj_map = build_adj_map(db, sym.id)
-        latest_factor = get_latest_factor(adj_map)  # 前复权基准：最新日期的因子值
+        latest_factor = get_latest_factor(adj_map)
 
-    q = db.query(BarDaily).filter(BarDaily.symbol_id == sym.id).order_by(BarDaily.trade_date.asc())
+    # 用 raw SQL 替代 ORM，避免为每行实例化完整 Python 对象
+    conditions = ["symbol_id = :sid"]
+    params: dict = {"sid": sym.id}
     if start:
-        q = q.filter(BarDaily.trade_date >= start)
+        conditions.append("trade_date >= :start")
+        params["start"] = start
     if end:
-        q = q.filter(BarDaily.trade_date <= end)
-    rows_db = q.all()
+        conditions.append("trade_date <= :end")
+        params["end"] = end
+    where_clause = " AND ".join(conditions)
+    rows_db = db.execute(
+        text(f"""
+            SELECT trade_date,
+                   CAST(open  AS REAL) AS open,
+                   CAST(high  AS REAL) AS high,
+                   CAST(low   AS REAL) AS low,
+                   CAST(close AS REAL) AS close,
+                   CAST(volume AS REAL) AS volume,
+                   CAST(amount AS REAL) AS amount,
+                   turnover_rate,
+                   consecutive_limit_up_days,
+                   consecutive_limit_down_days,
+                   consecutive_up_days,
+                   consecutive_down_days
+            FROM bars_daily
+            WHERE {where_clause}
+            ORDER BY trade_date ASC
+        """),
+        params,
+    ).fetchall()
 
-    # 将数据库 ORM 对象转换为 DailyRow 内部对象，同时应用复权换算
-    rows = [
-        DailyRow(
-            trade_date=b.trade_date,
-            # 只对价格字段（OHLC）做复权，成交量/金额/换手率不受分红影响，保持原始值
-            open=apply_adj(float(b.open), b.trade_date, adj, adj_map, latest_factor),
-            high=apply_adj(float(b.high), b.trade_date, adj, adj_map, latest_factor),
-            low=apply_adj(float(b.low), b.trade_date, adj, adj_map, latest_factor),
-            close=apply_adj(float(b.close), b.trade_date, adj, adj_map, latest_factor),
-            volume=float(b.volume),
-            amount=float(b.amount),
-            turnover_rate=float(b.turnover_rate) if b.turnover_rate is not None else None,
-            consecutive_limit_up_days=int(b.consecutive_limit_up_days),
-            consecutive_limit_down_days=int(b.consecutive_limit_down_days),
-            consecutive_up_days=int(b.consecutive_up_days),
-            consecutive_down_days=int(b.consecutive_down_days),
+    # 复权系数每行算一次（而非对 OHLC 分别调 apply_adj），减少 dict 查找次数
+    rows = []
+    for b in rows_db:
+        # raw SQL 下 SQLite 日期列返回字符串，需转为 date 对象才能命中 adj_map
+        td_raw = b.trade_date
+        td: date = td_raw if isinstance(td_raw, date) else date.fromisoformat(str(td_raw))
+        if adj == "none" or not adj_map:
+            factor = 1.0
+        else:
+            af = adj_map.get(td, 1.0)
+            factor = af if adj == "hfq" else af / latest_factor
+        rows.append(
+            DailyRow(
+                trade_date=td,
+                open=round(float(b.open) * factor, 4),
+                high=round(float(b.high) * factor, 4),
+                low=round(float(b.low) * factor, 4),
+                close=round(float(b.close) * factor, 4),
+                volume=float(b.volume),
+                amount=float(b.amount),
+                turnover_rate=float(b.turnover_rate) if b.turnover_rate is not None else None,
+                consecutive_limit_up_days=int(b.consecutive_limit_up_days),
+                consecutive_limit_down_days=int(b.consecutive_limit_down_days),
+                consecutive_up_days=int(b.consecutive_up_days),
+                consecutive_down_days=int(b.consecutive_down_days),
+            )
         )
-        for b in rows_db
-    ]
     # aggregate_bars 处理周期聚合：日线 interval='1d' 时直接返回，否则按自然日历分组压缩
     return aggregate_bars(rows, interval)
 

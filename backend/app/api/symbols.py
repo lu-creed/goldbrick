@@ -9,7 +9,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_admin, get_current_user
+from app.auth import get_current_admin, get_current_user_optional
 from app.database import get_db
 from app.models import Symbol
 from app.schemas import SymbolCreate, SymbolOut, SymbolPatch
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/symbols", tags=["symbols"])
 
 
 @router.get("", response_model=List[SymbolOut])
-def list_symbols(_user=Depends(get_current_user), db: Session = Depends(get_db)):
+def list_symbols(_user=Depends(get_current_user_optional), db: Session = Depends(get_db)):
     # 曾只同步到 instrument_meta 未写 symbols，导致下拉全空；读列表时按需补齐（无缺口则一次反查即返回）
     ensure_symbols_for_stock_meta(db)
     return db.query(Symbol).order_by(Symbol.ts_code.asc()).all()

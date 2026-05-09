@@ -1601,3 +1601,55 @@ export async function getSensitivityScanStatus(task_id: string): Promise<Sensiti
   return data;
 }
 
+// ── 个股财务快照 ─────────────────────────────────────────────────────────────
+
+export type PEPBPoint = {
+  date: string;
+  value: number | null;
+};
+
+export type FundamentalSnapshot = {
+  ts_code: string;
+  name: string | null;
+  market: string | null;
+  exchange: string | null;
+  list_date: string | null;
+  asset_type: string | null;
+  pe_ttm: number | null;
+  pb: number | null;
+  total_mv: number | null;
+  circ_mv: number | null;
+  fundamental_date: string | null;
+  latest_close: number | null;
+  latest_turnover_rate: number | null;
+  dav_payout_ratio: number | null;
+  dav_eps: number | null;
+  dav_class: string | null;
+  expected_yield: number | null;
+  pe_history: PEPBPoint[];
+  pb_history: PEPBPoint[];
+};
+
+export async function fetchFundamentalSnapshot(ts_code: string): Promise<FundamentalSnapshot> {
+  const { data } = await api.get<FundamentalSnapshot>("/fundamentals/snapshot", {
+    params: { ts_code },
+  });
+  return data;
+}
+
+export type FinancialIndicatorRow = {
+  period: string;         // 年份，如 "2023"
+  roe: number | null;     // 净资产收益率（%）
+  gross_margin: number | null;  // 销售毛利率（%）
+  debt_ratio: number | null;    // 资产负债率（%）
+  revenue: number | null;       // 营业收入（元）
+  net_profit: number | null;    // 净利润（元）
+};
+
+export async function fetchFinancialIndicators(ts_code: string): Promise<FinancialIndicatorRow[]> {
+  const { data } = await api.get<FinancialIndicatorRow[]>("/fundamentals/financial-indicators", {
+    params: { ts_code },
+  });
+  return data;
+}
+

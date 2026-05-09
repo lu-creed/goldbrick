@@ -149,12 +149,17 @@ def list_variable_names(_user=Depends(get_current_user), db: Session = Depends(g
 
 
 @router.get("", response_model=List[UserIndicatorOut])
-def list_custom_indicators(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    """获取当前用户的自定义指标 + 系统预置模板（user_id IS NULL），按 ID 升序。"""
+def list_custom_indicators(current_user=Depends(get_current_user_optional), db: Session = Depends(get_db)):
+    """获取当前用户的自定义指标 + 系统预置模板（user_id IS NULL），按 ID 升序。
+    未登录访客只返回系统模板。
+    """
     from sqlalchemy import or_
-    rows = db.query(UserIndicator).filter(
-        or_(UserIndicator.user_id.is_(None), UserIndicator.user_id == current_user.id)
-    ).order_by(UserIndicator.id.asc()).all()
+    if current_user is None:
+        rows = db.query(UserIndicator).filter(UserIndicator.user_id.is_(None)).order_by(UserIndicator.id.asc()).all()
+    else:
+        rows = db.query(UserIndicator).filter(
+            or_(UserIndicator.user_id.is_(None), UserIndicator.user_id == current_user.id)
+        ).order_by(UserIndicator.id.asc()).all()
     return [_user_indicator_to_out(r) for r in rows]
 
 

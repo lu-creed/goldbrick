@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import ScreeningHistory, Strategy, UserIndicator
-from app.auth import get_current_user
+from app.auth import get_current_user, get_current_user_optional
 from app.schemas import (
     ScreeningHistoryDetail,
     ScreeningHistoryItem,
@@ -171,10 +171,12 @@ def screening_run(body: ScreeningRunIn, current_user=Depends(get_current_user), 
 def screening_history_list(
     page: int = Query(1, ge=1, description="页码（从 1 开始）"),
     page_size: int = Query(20, ge=5, le=100, description="每页条数"),
-    current_user=Depends(get_current_user),
+    current_user=Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
-    """获取条件选股历史记录列表（按执行时间倒序，最新的排在最前面）。"""
+    """获取条件选股历史记录列表（按执行时间倒序，最新的排在最前面）。未登录返回空列表。"""
+    if current_user is None:
+        return []
     offset = (page - 1) * page_size
     rows = (
         db.query(ScreeningHistory)

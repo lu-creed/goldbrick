@@ -115,6 +115,27 @@ def _days_since_ipo_trade(
 
 
 def build_replay_daily(db: Session, trade_date: date, list_limit: int = 300) -> dict[str, Any]:
+    # 先找前一个交易日，再批量拉昨收，避免主查询里对每只股票跑相关子查询（N+1 问题）
+    prev_date_val = db.execute(
+        text("""
+            SELECT MAX(b.trade_date)
+            FROM bars_daily b
+            JOIN symbols s ON s.id = b.symbol_id
+            JOIN instrument_meta m ON m.ts_code = s.ts_code
+            WHERE b.trade_date < :d AND m.asset_type = 'stock'
+        """),
+        {"d": trade_date},
+    ).scalar()
+    prev_date = _coerce_date(prev_date_val)
+
+    prev_close_map: dict[int, float] = {}
+    if prev_date is not None:
+        pc_rows = db.execute(
+            text("SELECT symbol_id, CAST(close AS REAL) AS close FROM bars_daily WHERE trade_date = :pd"),
+            {"pd": prev_date},
+        ).fetchall()
+        prev_close_map = {r.symbol_id: float(r.close) for r in pc_rows if r.close is not None}
+
     sql = text("""
         SELECT
             s.id AS symbol_id,
@@ -127,14 +148,7 @@ def build_replay_daily(db: Session, trade_date: date, list_limit: int = 300) -> 
             CAST(b.high AS REAL) AS high,
             CAST(b.low AS REAL) AS low,
             CAST(b.close AS REAL) AS close,
-            CAST(b.turnover_rate AS REAL) AS turnover_rate,
-            (
-                SELECT CAST(b2.close AS REAL)
-                FROM bars_daily b2
-                WHERE b2.symbol_id = b.symbol_id AND b2.trade_date < :d
-                ORDER BY b2.trade_date DESC
-                LIMIT 1
-            ) AS prev_close
+            CAST(b.turnover_rate AS REAL) AS turnover_rate
         FROM bars_daily b
         JOIN symbols s ON s.id = b.symbol_id
         JOIN instrument_meta m ON m.ts_code = s.ts_code
@@ -155,7 +169,7 @@ def build_replay_daily(db: Session, trade_date: date, list_limit: int = 300) -> 
     for r in rows:
         ts_code = r.ts_code
         name = r.name
-        prev = r.prev_close
+        prev = prev_close_map.get(r.symbol_id)
         if prev is None or float(prev) <= 0:
             continue
         prev_close = float(prev)
@@ -323,36 +337,39 @@ def build_sentiment_trend(db: Session, days: int = 60) -> dict[str, Any]:
     if not trading_dates:
         return {"days": days, "points": [], "latest_date": None}
 
-    # 批量查询所有日期的涨跌停数据（避免 N 次查询）
+    # 批量查询所有日期的涨跌停数据；用 LAG 窗口函数代替相关子查询取 prev_close
+    # start_ext 往前多拿 7 自然日，确保 start_d 当天的 LAG 能命中昨收（跨节假日也覆盖）
+    from datetime import timedelta
+    start_ext = trading_dates[0] - timedelta(days=7)
     sql = text("""
+        WITH all_bars AS (
+            SELECT
+                b.trade_date,
+                s.id AS symbol_id,
+                s.ts_code,
+                m.name,
+                m.market,
+                m.exchange,
+                m.list_date,
+                CAST(b.high AS REAL) AS high,
+                CAST(b.low AS REAL) AS low,
+                CAST(b.close AS REAL) AS close
+            FROM bars_daily b
+            JOIN symbols s ON s.id = b.symbol_id
+            JOIN instrument_meta m ON m.ts_code = s.ts_code
+            WHERE b.trade_date >= :start_ext AND b.trade_date <= :end
+              AND m.asset_type = 'stock'
+        )
         SELECT
-            b.trade_date,
-            s.id AS symbol_id,
-            s.ts_code,
-            m.name,
-            m.market,
-            m.exchange,
-            m.list_date,
-            CAST(b.high AS REAL) AS high,
-            CAST(b.low AS REAL) AS low,
-            CAST(b.close AS REAL) AS close,
-            (
-                SELECT CAST(b2.close AS REAL)
-                FROM bars_daily b2
-                WHERE b2.symbol_id = b.symbol_id
-                  AND b2.trade_date < b.trade_date
-                ORDER BY b2.trade_date DESC
-                LIMIT 1
-            ) AS prev_close
-        FROM bars_daily b
-        JOIN symbols s ON s.id = b.symbol_id
-        JOIN instrument_meta m ON m.ts_code = s.ts_code
-        WHERE b.trade_date >= :start AND b.trade_date <= :end
-          AND m.asset_type = 'stock'
+            trade_date, symbol_id, ts_code, name, market, exchange, list_date,
+            high, low, close,
+            LAG(close) OVER (PARTITION BY symbol_id ORDER BY trade_date) AS prev_close
+        FROM all_bars
+        WHERE trade_date >= :start
     """)
     start_d = trading_dates[0]
     end_d = trading_dates[-1]
-    rows = db.execute(sql, {"start": start_d, "end": end_d}).fetchall()
+    rows = db.execute(sql, {"start_ext": start_ext, "start": start_d, "end": end_d}).fetchall()
 
     day_stats: dict[Any, dict[str, int]] = {
         d: {"up": 0, "down": 0, "flat": 0, "limit_up": 0, "limit_down": 0}
