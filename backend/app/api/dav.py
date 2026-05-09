@@ -8,11 +8,13 @@
 手动值优先级保持高于自动值，本接口无需改动。
 
 接口列表：
-  GET    /api/dav/stocks          全部看板股票（含最新价 + 预期股息率）
-  POST   /api/dav/stocks          添加股票到看板
-  PATCH  /api/dav/stocks/{ts_code} 更新分类/派息率/EPS/备注
-  DELETE /api/dav/stocks/{ts_code} 从看板移除
-  GET    /api/dav/stocks/search   搜索本地已知股票（供添加时下拉选）
+  GET    /api/dav/stocks                        全部看板股票（含最新价 + 预期股息率）
+  POST   /api/dav/stocks                        添加股票到看板
+  PATCH  /api/dav/stocks/{ts_code}              更新分类/派息率/EPS/备注
+  DELETE /api/dav/stocks/{ts_code}              从看板移除
+  GET    /api/dav/stocks/search                 搜索本地已知股票（供添加时下拉选）
+  GET    /api/dav/stocks/{ts_code}/auto-payout  实时从 AKShare 拉取派息率/EPS
+  POST   /api/dav/auto-classify                 按规则批量自动分类
 """
 from __future__ import annotations
 
@@ -192,3 +194,112 @@ def remove_stock(ts_code: str, current_user=Depends(get_current_user), db: Sessi
         raise HTTPException(status_code=404, detail="未找到该股票")
     db.delete(row)
     db.commit()
+
+
+# ── 自动获取派息率/EPS ──────────────────────────────────────────────────────────
+
+class AutoPayoutOut(BaseModel):
+    payout_ratio: Optional[float]  # 近两年平均派息率 %
+    eps: Optional[float]           # 最新年度 EPS 元/股
+
+
+@router.get("/stocks/{ts_code}/auto-payout", response_model=AutoPayoutOut)
+def get_auto_payout(ts_code: str, _user=Depends(get_current_user)):
+    """实时调用 AKShare 拉取个股分红历史，计算近两年平均派息率和最新 EPS。
+    结果不写入数据库，由前端决定是否填入手动字段。
+    注意：网络请求约 1-5 秒，前端需显示加载态。
+    """
+    from app.services.akshare_fundamentals import fetch_payout_ratio_eps
+    try:
+        payout_ratio, eps = fetch_payout_ratio_eps(ts_code)
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"AKShare 调用失败：{ex}") from ex
+    return AutoPayoutOut(payout_ratio=payout_ratio, eps=eps)
+
+
+# ── 自动分类 ────────────────────────────────────────────────────────────────────
+
+class AutoClassifyRule(BaseModel):
+    """单条自动分类规则：当 expected_yield >= yield_min 且 pe_ttm <= pe_max 时分为 target_class。
+    规则按顺序匹配，第一条匹配中的规则生效（类似 if/elif/else）。
+    """
+    yield_min: Optional[float] = None    # 预期股息率 >= 该值（%）
+    pe_max: Optional[float] = None       # PE ≤ 该值（None = 不限）
+    target_class: str                    # 目标分类 A/B/C/D
+
+
+class AutoClassifyIn(BaseModel):
+    rules: List[AutoClassifyRule]
+    overwrite: bool = False  # False = 只分类"未分类"股票；True = 强制覆盖已有分类
+
+
+class AutoClassifyResult(BaseModel):
+    classified: int   # 本次成功分类的数量
+    skipped: int      # 跳过（overwrite=False 且已有分类）的数量
+    details: List[dict]  # 每只股票的分类结果，便于前端展示
+
+
+@router.post("/auto-classify", response_model=AutoClassifyResult)
+def auto_classify(body: AutoClassifyIn, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """按用户提供的规则批量自动分类看板股票。
+    规则按顺序匹配，第一条命中的规则生效；没有规则匹配的股票不改变分类。
+    """
+    valid_classes = {"A", "B", "C", "D"}
+    for r in body.rules:
+        if r.target_class not in valid_classes:
+            raise HTTPException(status_code=422, detail=f"target_class 必须是 A/B/C/D，收到：{r.target_class}")
+
+    rows = db.query(DavStockWatch).filter(
+        DavStockWatch.user_id == current_user.id,
+    ).all()
+
+    classified = 0
+    skipped = 0
+    details = []
+
+    for row in rows:
+        if not body.overwrite and row.dav_class is not None:
+            skipped += 1
+            details.append({"ts_code": row.ts_code, "action": "skipped", "dav_class": row.dav_class})
+            continue
+
+        # 计算该股票当前预期股息率（用于规则匹配）
+        price = _latest_price(row.ts_code, db)
+        eff_pr = float(row.manual_payout_ratio) if row.manual_payout_ratio is not None else (
+            float(row.auto_payout_ratio) if row.auto_payout_ratio is not None else None
+        )
+        eff_eps = float(row.manual_eps) if row.manual_eps is not None else (
+            float(row.auto_eps) if row.auto_eps is not None else None
+        )
+        current_yield = _compute_yield(eff_pr, eff_eps, price)
+
+        # 查 PE（从 fundamental_daily 取最新记录）
+        pe_row = db.execute(text("""
+            SELECT pe_ttm FROM fundamental_daily
+            WHERE ts_code = :code
+            ORDER BY trade_date DESC LIMIT 1
+        """), {"code": row.ts_code}).fetchone()
+        current_pe = float(pe_row[0]) if pe_row and pe_row[0] is not None else None
+
+        matched_class = None
+        for rule in body.rules:
+            yield_ok = (rule.yield_min is None) or (current_yield is not None and current_yield >= rule.yield_min)
+            pe_ok = (rule.pe_max is None) or (current_pe is not None and current_pe <= rule.pe_max)
+            if yield_ok and pe_ok:
+                matched_class = rule.target_class
+                break
+
+        if matched_class is not None:
+            old_class = row.dav_class
+            row.dav_class = matched_class
+            classified += 1
+            details.append({"ts_code": row.ts_code, "action": "classified",
+                            "from": old_class, "to": matched_class,
+                            "yield": current_yield, "pe": current_pe})
+        else:
+            skipped += 1
+            details.append({"ts_code": row.ts_code, "action": "no_match",
+                            "dav_class": row.dav_class, "yield": current_yield, "pe": current_pe})
+
+    db.commit()
+    return AutoClassifyResult(classified=classified, skipped=skipped, details=details)

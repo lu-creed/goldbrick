@@ -331,7 +331,7 @@ def list_daily_universe(
     # 参数边界处理
     page = max(1, page)
     page_size = max(1, min(page_size, _MAX_PAGE_SIZE))
-    sort_keys = {"ts_code", "pct_change", "close", "volume", "amount", "turnover_rate"}
+    sort_keys = {"ts_code", "pct_change", "close", "volume", "amount", "turnover_rate", "pe_ttm", "pb", "total_mv"}
     if sort not in sort_keys:
         sort = "pct_change"  # 非法排序字段，默认按涨跌幅
     reverse = order.lower() != "asc"  # desc → reverse=True，asc → False
@@ -429,6 +429,8 @@ def list_daily_universe(
         items.sort(key=lambda x: x["volume"], reverse=reverse)
     elif sort == "amount":
         items.sort(key=lambda x: x["amount"], reverse=reverse)
+    elif sort in ("pe_ttm", "pb", "total_mv"):
+        items.sort(key=lambda x: (1, 0.0) if x[sort] is None else (0, x[sort]), reverse=reverse)
     else:
         # 默认 close 排序（兜底分支）
         items.sort(key=lambda x: x["close"], reverse=reverse)

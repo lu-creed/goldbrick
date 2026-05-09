@@ -30,7 +30,7 @@ from app.services.daily_universe import list_daily_universe, parse_daily_univers
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 # 合法的排序字段集合，限制前端传入的 sort 参数（防止 SQL 注入或拼写错误）
-SortField = Literal["ts_code", "pct_change", "close", "volume", "amount", "turnover_rate"]
+SortField = Literal["ts_code", "pct_change", "close", "volume", "amount", "turnover_rate", "pe_ttm", "pb", "total_mv"]
 
 
 @router.get("/daily-stocks", response_model=DailyUniverseOut)
